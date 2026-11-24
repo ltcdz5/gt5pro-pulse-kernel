@@ -1,0 +1,4 @@
+# 大体积产物只通过 Release 附件分发
+dist/
+*.img
+*.zip
