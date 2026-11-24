@@ -2,7 +2,7 @@
 
 真我 GT5 Pro（RMX3888 / SM8650 / ColorOS 17）的自编测试内核与配套模块发布仓库。
 
-当前发布版本：**pulse2** —— 第一个带 memcomp 内存压缩的测试版。
+当前发布版本：**pulse2 · build `#28`** —— 已写入本机当前槽位、完成真机压测的 memcomp 测试版。
 
 ---
 
@@ -30,7 +30,7 @@
 | 版本 | 说明 |
 |---|---|
 | pulse1 | 基线可用版（不含 memcomp），已写入 `boot_b` 并真重启验收通过，本机日常使用 |
-| pulse2 | 第一个带 memcomp 的测试版（本仓库首个 Release），**仅在 RAM 引导下验证，尚未写入 `boot_b`** |
+| pulse2 | 带 memcomp 的测试版。当前产物为 build `#28`，已写入本机当前槽位（`_a`）并真机重启验收，另有 `fastboot boot` RAM 引导验证 |
 
 ---
 
@@ -91,6 +91,19 @@ CONFIG_ZSMALLOC=y
 - MGLRU 保持内核自带实现（`enabled=0x0003`），不依赖任何内核附加模块
 - 默认拥塞控制保持 `cubic`
 
+### G. memcomp 6.1 移植修复（build `#28`）
+
+本版相对首个 memcomp 测试版修掉了 6 个移植语义问题，全部有源码位置和真机验证：
+
+1. **匿名页迁移挂点归位**：上游把 `memcomp_migrate_folio()` 插在 `__migrate_folio()`，6.1 移植时误插到只处理 buffer_head 文件页的 `__buffer_migrate_folio()`。6.1 没有 `__migrate_folio()`，等价锚点是 `migrate_folio_extra()`，现已移入，memcomp 保留页迁移后 token 不再丢失。
+2. **`mm/mincore.c` 空指针解引用**：`pte_offset_map_lock()` 返回 NULL 时原移植直接 `pte_same(ptep_get(*ptepp), orig)`；同时二次取锁会泄漏第一次的 PTL。已改成局部 `pte_t *ptep` + `if (ptep)` 保护，并在第二次取锁前解锁。
+3. **`mm/userfaultfd.c` 独占性判定**：上游检查的是被搬运的那一页（`PageAnonExclusive(page)`），6.1 移植仍在看 folio 首页，现已逐页判定。
+4. **`shmem_partial_swap_usage()` 计数**：补回上游 memcomp hunk——普通 swap entry 按 `xas_get_order()` 计 order，memcomp entry 先用 `memcomp_entry_stat()` 校验 token 仍驻留再计 `PAGE_SIZE`，函数在 `CONFIG_MEMCOMP` 下直接返回字节数。
+5. **去掉 `mmap_lock` 下的阻塞等待**：原移植在 `shmem_swapin_folio()` 里 `wait_var_event_killable()` 等缓存发布。现改回上游语义：缓存仍在发布时 `memcomp_load_folio()` 返回 `-EAGAIN`，转成 `-EEXIST` 后由调用方 `goto repeat` 重试，fault 路径不再持锁睡眠。
+6. **异步批次 `queue_work()` 竞态**：`memcomp_async_start()` 忽略 `queue_work()` 返回值，且批次在旧 work 还没返回时就被复用，可能让 `pending` 永久多 1、`memcomp_async_wait()` 永久阻塞、被 defer 的 folio 一直锁着。现改为：`memcomp_async_give()` 复用前 `flush_work()`；`memcomp_async_start()` 返回 `bool`，失败时撤销引用、清空 precomp 元数据，由 `memcomp_submit_deferred()` 退回同步 store。
+
+**刻意不接的部分**：上游 v1-0009（大 folio 批量 unmap）和 v1-0010（恢复大 folio 的 deferred split）。6.1 只有 order-0 与 PMD THP（512 页），而 `MEMCOMP_MAX_COMPRESS_PAGES=16` 会让 PMD THP 在 reserve 阶段就被拒绝，这两条路径在当前配置下不可达；0009 依赖的 `get_and_clear_full_ptes()` / `pte_advance_pfn()` / `folio_remove_rmap_ptes()` 本树也没有 6.1 实现，硬接线无法编译。等将来提高压缩页数上限或回移 mTHP 再补。
+
 ---
 
 ## 配套模块：Pulse 内存管理屏蔽（v1.2.0）
@@ -130,22 +143,30 @@ CONFIG_ZSMALLOC=y
 
 ## 安装
 
-### 内核
+### 内核（推荐 AK3 包）
 
-前提：已解锁 bootloader，设备为 RMX3888，当前槽位为 `_b`，已备份。
+前提：已解锁 bootloader，设备为 RMX3888 / ColorOS `RMX3888_17.0.0.120(CN01)`，已备份。
+
+在 KernelSU / 支持 AnyKernel3 的刷机工具里直接刷 `Pulse2-AK3-RMX3888-17.0.0.120-test8.zip`。安装器会：
+
+- 读 `ro.boot.slot_suffix`，默认刷**当前槽位**；
+- 检测到系统已完成 OTA 并安排下次从另一槽启动时，改刷 OTA 目标槽；
+- 校验目标槽现有 boot 是 `.120` 原厂或同固件 Pulse2 `#21`–`#26`，不匹配就退出；
+- 只写 `boot_a` / `boot_b`，写完回读 SHA-256 校验。
+
+### 内核（手动 dd）
 
 ```sh
-# 备份（务必先做）
-adb shell su -c 'dd if=/dev/block/by-name/boot_b of=/sdcard/boot_b-backup.img bs=4M'
-
-# 刷入
-adb push boot-pulse2-full.img /data/local/tmp/
-adb shell su -c 'dd if=/data/local/tmp/boot-pulse2-full.img of=/dev/block/by-name/boot_b bs=4M conv=fsync'
-adb shell su -c 'sync'
+slot=$(adb shell getprop ro.boot.slot_suffix | tr -d '\r')
+adb push boot-pulse2-r28-full.img /data/local/tmp/
+adb shell su -c "dd if=/data/local/tmp/boot-pulse2-r28-full.img of=/dev/block/by-name/boot$slot bs=4M conv=fsync"
+adb shell su -c "sha256sum /dev/block/by-name/boot$slot"   # 应为 5349ce8e…b1ba
 adb reboot
 ```
 
-说明：本机在早前多次刷写时，`fastboot flash boot_b` 均被 bootloader 拒绝，报 `Requested download size is more than max allowed`，连 34 MB 的 sparse 镜像也被拒（记录在交接文档里；本轮没有重新验证，因为设备当前是 RAM 引导状态，进 fastboot 会丢掉当前会话）。因此仓库只建议用 `dd` 方式刷入。回退时把备份镜像写回同一个分区即可。
+备份与回退都用同一个分区名，把 `dd` 的 `if`/`of` 反过来即可。
+
+说明：本机 bootloader 会拒绝 `fastboot flash boot_a/boot_b`，报 `Requested download size is more than max allowed`，连 34 MB 的 sparse 镜像也被拒；而 `fastboot boot`（内存引导，不写分区）可用。所以仓库只提供 AK3 包与 `dd` 两种刷入方式。回退时把备份镜像写回同一个分区即可。
 
 ### 模块
 
@@ -153,31 +174,32 @@ KernelSU 中直接刷入 `Pulse-MemGuard-v1.2.0.zip`，重启生效。
 
 ---
 
-## 验证记录（pulse2 / #20）
+## 验证记录（pulse2 / build `#28`）
 
-设备：RMX3888 / ColorOS 17 / 槽位 `_b` / KernelSU
+设备：RMX3888 / ColorOS 17 / 当前槽位 `_a` / KernelSU 3.3.1-55
 
-引导方式：`fastboot boot`（RAM 引导，不写入任何分区）
+引导方式：先 `fastboot boot`（37.6 MB 截断镜像）RAM 引导验证，再写入当前槽位 `boot_a` 真重启验收
 
 | 项 | 结果 |
 |---|---|
-| 开机 | 约 35 秒 `boot_completed=1`，`lsmod` 629 |
-| 压力测试 | 每 5 秒轮换 6 个应用，持续 917 秒未死机（上一版 #19 在 331 秒死机） |
-| 压缩量 | 8.17 GB 原始 → 1.90 GB 实际（约 23%） |
-| 回收 | `pgsteal_anon` 3,145,686，`bad rss-counter` 0，`reserve_entry_alloc_fail` 0，`anon_unmap_fail_pages` 0 |
-| 内存 | 压力下 MemFree 约 190 MB，MemAvailable 约 4.2 GB |
-| 数据完整性 | 128 MB 匿名页压出后逐字节回读一致；随机页序回读一致 |
-| WiFi | `wlan0` UP，ping 3/3、HTTP 200 / 0.12 s |
-| 蓝牙 | `bluetooth` / `btpower` / `bt_fm_slim` / `hci_uart` 已加载 |
-| 移动数据 | modem `ONLINE`、SIM `LOADED`、`rmnet_data0–2` 在位 |
-| 崩溃 | `dmesg` 无 panic / Oops / OOM / bad rss |
-
----
+| 写入校验 | 完整镜像 192 MiB，`dd` 写入 `boot_a` 后回读 SHA-256 与本地一致（`5349ce8e…b1ba`） |
+| 开机 | 真重启 `boot_completed=1`，`uname -v` = `#28 SMP PREEMPT Wed Nov 25 01:19:53 CST 2026`，`lsmod` 629 |
+| 压力测试 | 30 个应用每 4 秒轮换 + 每 5 秒全量采样，持续 973 秒，load 峰值 88，未死机 |
+| 后台保活 | 另一轮暴力测试 40 个应用全部保活，内存占用 136%，无黑屏 |
+| 压缩量 | 15.7 GB 原始 → 3.78 GB 实际（约 24%），zsmalloc 池峰值约 4.0 GB |
+| 回收 | `pgsteal_anon` 8,459,682，`bad rss-counter` 0，`reserve_entry_alloc_fail` 0，`anon_unmap_fail_pages` 0 |
+| 内存 | 压力下 MemFree 约 100 MB，MemAvailable 约 2.3 GB；空载 MemFree 2.4 GB |
+| 数据完整性 | 128 MB 匿名页 `MADV_PAGEOUT` 后 RSS 130952→12 kB，逐字节回读一致；随机页序回读一致 |
+| WiFi | `wlan0` / `wlan1` UP，`qca_cld3_kiwi_v2` / `mac80211` / `cfg80211` / `rfkill` 全部加载 |
+| 蓝牙 | `btpower` / `bt_fm_slim` 已加载 |
+| 移动数据 | modem `ONLINE`，`rmnet_data` 接口在位，`ping 223.5.5.5` 0% 丢包 |
+| 崩溃 | `dmesg` 无 panic / Oops / OOM / bad rss；`/sys/fs/pstore/` 无记录 |
+| KABI | `vmlinux.symvers` 与基线逐字节一致（`3d51e642…`），989 个厂商模块 CRC 不符 0，新增导出仅 10 个 `zs_*` |
 
 ## 已知问题
 
-- **这是测试版**：长时间高负载下仍存在死机风险（#19 曾在 331 秒死机，#20 在 917 秒内未复现，但未完成完整时长验证）。
-- `mincore()` 对 memcomp 条目仍报告为驻留，尚未接线。
+- **这是测试版**：`#28` 在 973 秒高强度轮转与 40 应用保活测试中未复现死机，但这不等于长期稳定，仍建议保留原厂 boot 备份。
+- `mincore()` 对 memcomp 条目仍报告为驻留（本版只修了它的空指针解引用，没有接线驻留查询），因此不能用 `mincore` 判断页是否被压出。
 - 关闭 zram 后，依赖内核 zram API 的厂商模块不会加载（例如 hybridswap 相关模块）。
 - 三个 OPPO 私有模块（`oplus_bsp_sched_ext`、`oplus_bsp_game_opt`、`oplus_bsp_mm_ermreclaimd`）因公开源码缺少对应导出而无法加载。
 - 未验证整机 swap 落盘/swapoff 场景（本版无 swap）。
@@ -206,3 +228,4 @@ KernelSU 中直接刷入 `Pulse-MemGuard-v1.2.0.zip`，重启生效。
 
 - 内核代码：GPL-2.0
 - 本仓库脚本与模块：GPL-2.0
+
