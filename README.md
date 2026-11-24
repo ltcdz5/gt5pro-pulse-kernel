@@ -29,8 +29,8 @@
 
 | 版本 | 说明 |
 |---|---|
-| pulse1 | 基线可用版（不含 memcomp），已在本机长期使用 |
-| pulse2 | 第一个带 memcomp 的测试版（本仓库首个 Release） |
+| pulse1 | 基线可用版（不含 memcomp），已写入 `boot_b` 并真重启验收通过，本机日常使用 |
+| pulse2 | 第一个带 memcomp 的测试版（本仓库首个 Release），**仅在 RAM 引导下验证，尚未写入 `boot_b`** |
 
 ---
 
@@ -115,7 +115,7 @@ CONFIG_ZSMALLOC=y
 | `swap/switch` | `false` | 关闭厂商 swap 决策 |
 | `dynaZramConfig/switch` | `false` | 关闭动态 zram |
 | `cMemConfig/switch` | `false` | 关闭厂商 cMem |
-| `cametaConfig` 内存阈值 | 放宽 | 相机场景不再激进清后台 |
+| `cameraConfig` 内存阈值 | 放宽 | 相机场景不再激进清后台 |
 | Nirvana 各档 `ExpectedBgCountMap` | 放宽到 64 | 提高后台保留期望值 |
 
 这样做的目的只有一个：**避免厂商内存管理在后台杀进程、主动压缩，和 memcomp 抢同一批匿名页**，让内存回收行为可预期。
@@ -145,7 +145,7 @@ adb shell su -c 'sync'
 adb reboot
 ```
 
-说明：这台机器的 bootloader 会拒绝 `fastboot flash boot`（报 `Requested download size is more than max allowed`），请使用上面的 `dd` 方式。回退时把备份镜像写回同一个分区即可。
+说明：本机在早前多次刷写时，`fastboot flash boot_b` 均被 bootloader 拒绝，报 `Requested download size is more than max allowed`，连 34 MB 的 sparse 镜像也被拒（记录在交接文档里；本轮没有重新验证，因为设备当前是 RAM 引导状态，进 fastboot 会丢掉当前会话）。因此仓库只建议用 `dd` 方式刷入。回退时把备份镜像写回同一个分区即可。
 
 ### 模块
 
@@ -156,6 +156,8 @@ KernelSU 中直接刷入 `Pulse-MemGuard-v1.2.0.zip`，重启生效。
 ## 验证记录（pulse2 / #20）
 
 设备：RMX3888 / ColorOS 17 / 槽位 `_b` / KernelSU
+
+引导方式：`fastboot boot`（RAM 引导，不写入任何分区）
 
 | 项 | 结果 |
 |---|---|
@@ -179,6 +181,7 @@ KernelSU 中直接刷入 `Pulse-MemGuard-v1.2.0.zip`，重启生效。
 - 关闭 zram 后，依赖内核 zram API 的厂商模块不会加载（例如 hybridswap 相关模块）。
 - 三个 OPPO 私有模块（`oplus_bsp_sched_ext`、`oplus_bsp_game_opt`、`oplus_bsp_mm_ermreclaimd`）因公开源码缺少对应导出而无法加载。
 - 未验证整机 swap 落盘/swapoff 场景（本版无 swap）。
+- 移动数据只确认了 modem `ONLINE`、SIM `LOADED`、`rmnet_data0–2` 在位；绑定 `rmnet_data0` 做的 ping / curl 未通过（原因未确认，可能与数据开关或路由策略有关），真实流量未验收。
 
 ---
 
