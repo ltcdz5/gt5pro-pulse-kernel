@@ -30,6 +30,6 @@ Pulse2 是 memcomp 从 Android 6.12 移植到 Linux 6.1.157 的首个测试系�
 | `Pulse-MemGuard-v1.2.0.zip` | 配套 KernelSU 模块，用于屏蔽 ColorOS 厂商内存管理对 memcomp 的干扰。单独安装，重启生效。真机验收用的是同 ID 的 `1.1.0` |
 | `sha256sums-r31.txt` | 本版附件的 SHA-256 校验清单 |
 
-同一预发布也保留之前的包。安装 `#31` 时请选择上表中的 `test10` 或 `r31` 文件；之前各版附件仍在同一预发布中。
+本预发布只保留 `#31` 的最新文件。安装时选择上表中的 `test10` 或 `r31` 文件；旧版产物已从预发布移除，仅在本机留档。
 
 完整补丁清单与安装说明见[项目 README](https://github.com/ltcdz5/gt5pro-pulse-kernel)。构建见[对应源码说明](https://github.com/ltcdz5/gt5pro-pulse-kernel/tree/main/source-r31)。memcomp 上游为 [nakixii/memcomp](https://github.com/nakixii/memcomp)。PAGEOUT/COLD 修复参考 [ferstar/kernel_manifest](https://github.com/ferstar/kernel_manifest/commit/588b9fef7457b6db587bf57428938bf6d870d435)。
