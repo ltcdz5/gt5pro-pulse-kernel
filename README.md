@@ -2,14 +2,15 @@
 
 真我 GT5 Pro（RMX3888 / SM8650 / ColorOS 17）的自编测试内核与配套模块发布仓库。
 
-当前发布版本：**Pulse2 · build `#31`**，已在本机 `_a` 槽写入并重启验收的 memcomp 测试版。[下载预发布](https://github.com/ltcdz5/gt5pro-pulse-kernel/releases/tag/pulse2)
+当前发布版本：**Pulse2 · build `#34`（未上机测试）**。`#31` 是最后一个已写入 `_a` 槽并重启验收的版本；`#34` 只完成离线编译、符号闸门和安装脚本校验。[下载预发布](https://github.com/ltcdz5/gt5pro-pulse-kernel/releases/tag/pulse2)
 
 ---
 
 ## 免责声明
 
 - 本项目**仅用于学习交流与个人测试开发**，不是正式稳定版，也不面向日常使用。
-- build `#31` 的刷写和重启验收范围为**真我 GT5 Pro（RMX3888）ColorOS 17 `RMX3888_17.0.0.120(CN01)` 的 `_a` 槽**。
+- `#31` 的刷写和重启验收范围为**真我 GT5 Pro（RMX3888）ColorOS 17 `RMX3888_17.0.0.120(CN01)` 的 `_a` 槽**。
+- build `#34` **未在任何真机上运行过**，只做了离线构建与静态校验，请自行承担刷入风险。
 - 刷入内核/模块属于修改系统分区的操作，存在变砖、丢数据、失去保修等风险，请自行备份 `boot` 分区。
 - 作者不对任何人使用本仓库内容造成的任何直接或间接损失负责。使用即表示你已理解并自愿承担全部风险。
 
@@ -30,7 +31,7 @@
 | 版本 | 说明 |
 |---|---|
 | pulse1 | 基线可用版（不含 memcomp），已写入 `boot_b` 并真重启验收通过，本机日常使用 |
-| pulse2 | 首个带 memcomp 的测试系列。当前产物为 build `#31`，已写入本机当前槽位（`_a`）并重启验收 |
+| pulse2 | 首个带 memcomp 的测试系列。当前产物为 build `#34`（未上机）；最后实测版本是 build `#31` |
 
 ---
 
@@ -105,11 +106,12 @@ CONFIG_ZSMALLOC=y
 
 **刻意不接的部分**：上游 v1-0009（大 folio 批量 unmap）和 v1-0010（恢复大 folio 的 deferred split）。6.1 只有 order-0 与 PMD THP（512 页），而 `MEMCOMP_MAX_COMPRESS_PAGES=16` 会让 PMD THP 在 reserve 阶段就被拒绝，这两条路径在当前配置下不可达；0009 依赖的 `get_and_clear_full_ptes()` / `pte_advance_pfn()` / `folio_remove_rmap_ptes()` 本树也没有 6.1 实现，硬接线无法编译。等将来提高压缩页数上限或回移 mTHP 再补。
 
-### H. PAGEOUT/COLD 与 UFFDIO_MOVE（build `#29`–`#31`）
+### H. PAGEOUT/COLD、UFFDIO_MOVE 与并发修复（build `#29`–`#34`）
 
 - `#29` 修正 `mm/madvise.c` 中 `MADV_PAGEOUT` / `MADV_COLD` 对普通 swap 条目的判断，保留 memcomp 条目的处理分支。重复操作后压缩条目保持有效，回读一致。
 - `#30` 调整 `mm/userfaultfd.c` 中 `UFFDIO_MOVE` 的检查顺序。先验证 PMD，再取 PTE 地址和锁。真机已校验普通压缩条目、零页、共享页拒绝、整块 2 MiB 移动，以及拆分后的 4 KiB 移动。
 - `#31` 修正 `UFFDIO_MOVE` 整块大页遇到迁移条目时把栈上副本当作页表来找锁的问题，改为传入真实 PMD 地址；PTE 路径重试成功后会清除上一轮的 `-EAGAIN`，已搬页正常计入进度。另补回 shrinker 的默认扫描权重（`DEFAULT_SEEKS`）、不再忽略 shrinker 注册失败，soft-dirty 判定改用 6.1 官方 `vma_soft_dirty_enabled()`。本机未启用 `CONFIG_MEM_SOFT_DIRTY`，该项无运行时行为变化。
+- `#34` 修正 tmpfs 压缩条目处于发布窗口时读方反复"分配—记账—重试"的问题：pin 后在 token 锁内检查 shadow，仍为 `PUBLISHING` 时有界等待（50 ms 兜底）再分配。`shmem_swaplist` 改为持锁完成 `swapped++`，与库存 swap 路径一致。异步压缩补充 `async_queue_fail`、`async_skip_pages` 统计，并移除遗留的 `MCP_TRACE` 调试埋点。**本版未上机验证。**
 
 ---
 
@@ -154,11 +156,11 @@ CONFIG_ZSMALLOC=y
 
 前提：已解锁 bootloader，设备为 RMX3888 / ColorOS `RMX3888_17.0.0.120(CN01)`，已备份。
 
-在支持 AnyKernel3 的 root 刷机工具中选择 `Pulse2-AK3-RMX3888-17.0.0.120-test10.zip`。安装器执行以下步骤。
+在支持 AnyKernel3 的 root 刷机工具中选择 `Pulse2-AK3-RMX3888-17.0.0.120-test11.zip`。安装器执行以下步骤。
 
 - 读 `ro.boot.slot_suffix`，默认刷**当前槽位**；
 - 检测到系统已完成 OTA 并安排下次从另一槽启动时，改刷 OTA 目标槽；
-- 校验目标槽现有 boot 是 `.120` 原厂或包内支持的同固件 Pulse2 `#21`–`#26`、`#28`、`#29`、`#30`，不匹配就退出。目标槽已是 `#31` 时直接提示；
+- 校验目标槽现有 boot 是 `.120` 原厂或包内支持的同固件 Pulse2 `#21`–`#26`、`#28`–`#31`，不匹配就退出。目标槽已是 `#34` 时直接提示；
 - 只写 `boot_a` / `boot_b`，写完回读 SHA-256 校验。
 
 ### 内核（手动 dd）
@@ -166,12 +168,12 @@ CONFIG_ZSMALLOC=y
 ```sh
 slot=$(adb shell getprop ro.boot.slot_suffix | tr -d '\r')
 case "$slot" in _a|_b) ;; *) exit 1 ;; esac
-adb push boot-pulse2-r31-full.img /data/local/tmp/
-adb shell su -c "dd if=/data/local/tmp/boot-pulse2-r31-full.img of=/dev/block/by-name/boot$slot bs=4M conv=fsync"
+adb push boot-pulse2-r34-full.img /data/local/tmp/
+adb shell su -c "dd if=/data/local/tmp/boot-pulse2-r34-full.img of=/dev/block/by-name/boot$slot bs=4M conv=fsync"
 adb shell su -c "sha256sum /dev/block/by-name/boot$slot"
 ```
 
-仅在普通安装场景下使用上述命令，OTA 等待重启时用 AK3 选槽。读回 SHA-256 为 `00bd62f24a7fe4f687f52e043bba8fde62ae0d235f7e4ba9abac93041a2ccd78` 后再重启。
+仅在普通安装场景下使用上述命令，OTA 等待重启时用 AK3 选槽。读回 SHA-256 为 `e4d4e01f4821da6309ee46a17ed84203fa5cf2e4222a2872dc42edaef5b462d9` 后再重启。
 
 ```sh
 adb reboot
@@ -187,15 +189,19 @@ KernelSU 中直接刷入 `Pulse-MemGuard-v1.2.0.zip`，重启生效。
 
 ---
 
-## 验证记录（Pulse2 / build `#31`）
+## 验证记录（Pulse2 / build `#34`，未上机）
 
 设备：RMX3888 / ColorOS 17 / 当前槽位 `_a` / KernelSU 3.3.1-55
 
-验收用的是 `dd` 写入 `boot_a` 后的真重启。AK3 `test10` 做了包完整性检查与安装脚本语法校验。
+`#34` **没有真机记录**，下表是本版离线检查结果；最后一份真机验收属于 `#31`（`dd` 写入 `boot_a` 后重启，`uname -v` = `#31 SMP PREEMPT Wed Nov 25 15:13:16 CST 2026`）。
 
 | 项 | 结果 |
 |---|---|
-| 写入与开机 | 192 MiB 完整镜像写入 `boot_a`，回读 SHA-256 一致。`boot_completed=1`，`uname -v` 为 `#31 SMP PREEMPT Wed Nov 25 15:13:16 CST 2026` |
+| 编译 | `make Image` RC=0，0 error |
+| 符号 | `vmlinux.symvers` md5 与 `#30`/`#31` 相同（`3d51e642…`），无新增导出 |
+| 闸门 | vendor_boot 490 + vendor_dlkm 439 + system_dlkm 60，CRC 不匹配 0，既有缺失 28 |
+| 安装包 | AK3 `test11` 通过包完整性与 `sh -n` 语法校验；镜像 SHA-256 与包内 payload 一致 |
+| 真机 | **未运行** |
 | 内存回归 | PAGEOUT/COLD、mincore、smaps、shmem、压缩失败回滚、UFFDIO_MOVE 共六项通过。回滚恢复 256 页，漏恢复 0 |
 | 大页移动 | 2 MiB 整块移动、拆分后的 4 KiB 移动和数据回读均通过 |
 | 网络与蓝牙 | Android 报告 Wi-Fi 和移动数据均为 `VALIDATED`，蓝牙为 `ON` |
@@ -211,18 +217,18 @@ KernelSU 中直接刷入 `Pulse-MemGuard-v1.2.0.zip`，重启生效。
 - 三个 OPPO 私有模块（`oplus_bsp_sched_ext`、`oplus_bsp_game_opt`、`oplus_bsp_mm_ermreclaimd`）因公开源码缺少对应导出而无法加载。
 - 未验证整机 swap 落盘/swapoff 场景（本版无 swap）。
 - `UFFDIO_MOVE` 的迁移等待与重试记账已在 `#31` 修正，并发 PMD 切换专项回归尚未补。
-- `#31` 未处理 shmem 在压缩条目发布窗口内的重复分配与重试路径，该项列入下一轮。
+- `#34` 已在源码层面处理 shmem 发布窗口与 swaplist 锁序，但**未经真机验证**。
 
 ---
 
 ## 借鉴与复刻声明
 
-`#31` 对应内核源码、OnePlusOSS 厂商源码、配置和构建脚本随预发布提供。[构建说明](source-r31/README.md)
+`#34` 对应内核源码、OnePlusOSS 厂商源码、配置和构建脚本随预发布提供。[构建说明](source-r34/README.md)
 
 | 来源 | 用途 |
 |---|---|
 | [OnePlusOSS/android_kernel_common_oneplus_sm8635](https://github.com/OnePlusOSS/android_kernel_common_oneplus_sm8635) @ `oneplus/sm8635_b_16.0.0_nord_5` | 内核基线源码（GPL-2.0） |
-| [nakixii/memcomp](https://github.com/nakixii/memcomp) | memcomp 上游实现（GPL-2.0），6.1 移植和后续修复随 `#31` 源码包提供 |
+| [nakixii/memcomp](https://github.com/nakixii/memcomp) | memcomp 上游实现（GPL-2.0），6.1 移植和后续修复随 `#34` 源码包提供 |
 | [cctv18/oppo_oplus_realme_sm8650](https://github.com/cctv18/oppo_oplus_realme_sm8650) | LZ4 / zstd / BBRv3 / TCP Brutal / SSG / hide / f2fs 等补丁参考 |
 | [ferstar/kernel_manifest](https://github.com/ferstar/kernel_manifest/commit/588b9fef7457b6db587bf57428938bf6d870d435) | `#29` 的 PAGEOUT/COLD 修复参考，按本树的 memcomp 路径适配 |
 | Linux stable 上游提交 | UFS 修复（提交号见上） |
