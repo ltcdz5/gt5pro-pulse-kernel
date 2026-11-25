@@ -112,7 +112,7 @@ CONFIG_ZSMALLOC=y
 - `#30` 调整 `mm/userfaultfd.c` 中 `UFFDIO_MOVE` 的检查顺序。先验证 PMD，再取 PTE 地址和锁。真机已校验普通压缩条目、零页、共享页拒绝、整块 2 MiB 移动，以及拆分后的 4 KiB 移动。
 - `#31` 修正 `UFFDIO_MOVE` 整块大页遇到迁移条目时把栈上副本当作页表来找锁的问题，改为传入真实 PMD 地址；PTE 路径重试成功后会清除上一轮的 `-EAGAIN`，已搬页正常计入进度。另补回 shrinker 的默认扫描权重（`DEFAULT_SEEKS`）、不再忽略 shrinker 注册失败，soft-dirty 判定改用 6.1 官方 `vma_soft_dirty_enabled()`。本机未启用 `CONFIG_MEM_SOFT_DIRTY`，该项无运行时行为变化。
 - `#34` 修正 tmpfs 压缩条目处于发布窗口时读方反复"分配—记账—重试"的问题：pin 后在 token 锁内检查 shadow，仍为 `PUBLISHING` 时有界等待（50 ms 兜底）再分配。`shmem_swaplist` 改为持锁完成 `swapped++`，与库存 swap 路径一致。异步压缩补充 `async_queue_fail`、`async_skip_pages` 统计，并移除遗留的 `MCP_TRACE` 调试埋点。**本版未上机验证。**
-- `#37` 把 tmpfs 压缩条目的发布等待改为有界布尔返回：4 轮 × 50 ms，仍未发布则直接走 `-EEXIST` 重试，不再在等待后反复分配与记账，超时计入 `cache_publish_wait_timeout`。缓存 shadow 指针加空值防护；memcg 标识已离线时，回读改记到最近的在线祖先，与 swap 路径一致。**本版未上机验证。**
+- `#37` 为 tmpfs 压缩条目增加发布等待上限和超时统计。预留条目时，已退休的源 memcg ID 可沿祖先链回退。回读时若无法取得记录 ID 的在线 CSS，则沿用 swapin 规则向回读方 `mm` 对应的 memcg 计费。**本版未上机验证。**
 - `#39` 把异步批次的启动判据从"批次总页数"改为"实际需要压缩的页数"：先提交、扫出 same-fill 页后再判断，不足 8 页不唤醒 worker 而是直接同步存储，同时避免小批次多扫一遍页。软件 worker 的并发上限设为 `min(online_cpus, 批次数) - 1`，与后台压缩预算同口径。新增 `async_batches`、`async_compressible_pages`、`async_pool_empty`、`async_store_fail_pages`、`async_early_complete`、`async_active_peak` 及排队/执行/等待三组耗时统计。**本版未上机验证。**
 - `#41` tmpfs 压缩条目在锁内完成 token 发布与唤醒，读方等待不再跨锁睡眠；大 folio 的子页 token 从头部基址构造，预约期间拆分返回 `-EBUSY` 并计数；`memcomp.shmem=`、`memcomp.disabled=` 改为按布尔解析；`workingset` 的 refault 记账推迟到 PTE/`XArray` 安装成功之后。**本版未上机验证。**
 - `#45` 8 项审计修复：tmpfs 边界页在压缩发布完成后才清零；`vmscan` 不再跳过普通页的 unmap 失败统计；两张 OEM 公钥进入构建输入并加证书闸门；SSG 请求对 `blkg` 取引用、完成时归还；F2FS 固定输出布局阻止 `cross_block` 负索引；alarmtimer 负差值限制后转超时、唤醒锁恢复无超时语义；UFS `PA_PWRMODE` 读取失败不再使用未初始化值；TCP Brutal 切出时还原 `sk_prot` 并加 socket 锁。
