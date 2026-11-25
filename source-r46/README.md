@@ -35,4 +35,6 @@ bash cert_gate.sh ./out-r46 ./kernel/common
 
 - `mm/vmscan.c` 的 `memcomp_may_defer()`：非 kswapd 来源直接返回 false。前台 direct / memcg 定向回收、`MADV_PAGEOUT` 改走同步内联压缩，消除等待异步 worker 的延迟尾巴；kswapd 后台回收仍走异步流水线。批次容量、启动阈值、worker 并发上限、统计与配置均不变。
 
+本版配置与 `#45` 相同（`diff=0`），都含 `CONFIG_KUNIT=y`。KUnit 框架随正式镜像编入，`vmlinux.symvers` 因此比 `#45` 多 8 个 `kunit_*` 导出（`__kunit_activate_static_stub`、`kunit_add_action`、`kunit_add_action_or_reset`、`kunit_deactivate_static_stub`、`kunit_get_static_stub_address`、`kunit_release_action`、`kunit_remove_action`、`kunit_vm_mmap`），来自 `lib/kunit/static_stub.c`、`resource.c`、`user_alloc.c` 的 6.1 测试框架回移代码。它们是新增导出，不改变生产路径，也不影响厂商模块；若发布要求测试框架不进入内核，需以 `KUNIT=n`、`KUNIT_DEBUGFS=n` 重编。
+
 基线为 [OnePlusOSS 内核](https://github.com/OnePlusOSS/android_kernel_common_oneplus_sm8635/tree/oneplus/sm8635_b_16.0.0_nord_5) 与 [OnePlusOSS 厂商源码](https://github.com/OnePlusOSS/android_kernel_modules_and_devicetree_oneplus_sm8635/tree/oneplus/sm8635_b_16.0.0_nord_5)。memcomp 来自 [nakixii/memcomp](https://github.com/nakixii/memcomp/tree/memcomp-v1-rfc)。原版权声明及许可证保留在源码包内。
