@@ -2,15 +2,15 @@
 
 真我 GT5 Pro（RMX3888 / SM8650 / ColorOS 17）的自编测试内核与配套模块发布仓库。
 
-当前发布版本：**Pulse2 · build `#45`（测试版）**。本机已完成 `_a` 槽刷写与重启、网络检查、cgroup 限额回收和匿名页数据回读。[下载预发布与验证附件](https://github.com/ltcdz5/gt5pro-pulse-kernel/releases/tag/pulse2-r45)
+当前发布版本：**Pulse2 · build `#46`（测试版）**。本机已完成 `_a` 槽刷写与重启、网络检查、cgroup 限额回收和匿名页数据回读；本版把软件异步压缩限定给 kswapd 后台回收，前台直接回收改同步，压力回读从 14–35 s/遍降到 4.5–4.8 s/遍。[下载预发布与验证附件](https://github.com/ltcdz5/gt5pro-pulse-kernel/releases/tag/pulse2-r46)
 
 ---
 
 ## 免责声明
 
 - 本项目**仅用于学习交流与个人测试开发**，不是正式稳定版，也不面向日常使用。
-- `#45` 的刷写和重启验收范围为**真我 GT5 Pro（RMX3888）ColorOS 17 `RMX3888_17.0.0.120(CN01)`**，本机写入 `_a` 槽；其他机型、其他固件不作保证。
-- `#45` 已通过独立 cgroup 的匿名页压力回读专项。整机应用保活和深睡唤醒时序仍待专项验证，请自行承担刷入风险。
+- `#46` 的刷写和重启验收范围为**真我 GT5 Pro（RMX3888）ColorOS 17 `RMX3888_17.0.0.120(CN01)`**，本机写入 `_a` 槽；其他机型、其他固件不作保证。
+- `#46` 已通过独立 cgroup 的匿名页压力回读专项。整机应用保活和深睡唤醒时序仍待专项验证，请自行承担刷入风险。
 - 刷入内核/模块属于修改系统分区的操作，存在变砖、丢数据、失去保修等风险，请自行备份 `boot` 分区。
 - 作者不对任何人使用本仓库内容造成的任何直接或间接损失负责。使用即表示你已理解并自愿承担全部风险。
 
@@ -31,7 +31,7 @@
 | 版本 | 说明 |
 |---|---|
 | pulse1 | 基线可用版（不含 memcomp），已写入 `boot_b` 并真重启验收通过，本机日常使用 |
-| pulse2 | 首个带 memcomp 的测试系列。当前产物为 build `#45`，已写入 `_a` 槽并完成基础功能验收 |
+| pulse2 | 首个带 memcomp 的测试系列。当前产物为 build `#46`（软件异步仅用于 kswapd），已写入 `_a` 槽并完成基础功能验收 |
 
 ---
 
@@ -116,6 +116,7 @@ CONFIG_ZSMALLOC=y
 - `#39` 把异步批次的启动判据从"批次总页数"改为"实际需要压缩的页数"：先提交、扫出 same-fill 页后再判断，不足 8 页不唤醒 worker 而是直接同步存储，同时避免小批次多扫一遍页。软件 worker 的并发上限设为 `min(online_cpus, 批次数) - 1`，与后台压缩预算同口径。新增 `async_batches`、`async_compressible_pages`、`async_pool_empty`、`async_store_fail_pages`、`async_early_complete`、`async_active_peak` 及排队/执行/等待三组耗时统计。**本版未上机验证。**
 - `#41` tmpfs 压缩条目在锁内完成 token 发布与唤醒，读方等待不再跨锁睡眠；大 folio 的子页 token 从头部基址构造，预约期间拆分返回 `-EBUSY` 并计数；`memcomp.shmem=`、`memcomp.disabled=` 改为按布尔解析；`workingset` 的 refault 记账推迟到 PTE/`XArray` 安装成功之后。**本版未上机验证。**
 - `#45` 8 项审计修复：tmpfs 边界页在压缩发布完成后才清零；`vmscan` 不再跳过普通页的 unmap 失败统计；两张 OEM 公钥进入构建输入并加证书闸门；SSG 请求对 `blkg` 取引用、完成时归还；F2FS 固定输出布局阻止 `cross_block` 负索引；alarmtimer 负差值限制后转超时、唤醒锁恢复无超时语义；UFS `PA_PWRMODE` 读取失败不再使用未初始化值；TCP Brutal 切出时还原 `sk_prot` 并加 socket 锁。
+- `#46` 把软件异步压缩限定为 kswapd 后台回收：`mm/vmscan.c` 的 `memcomp_may_defer()` 对非 kswapd 来源（direct / memcg 定向回收、`MADV_PAGEOUT`）直接返回 false，走同步内联压缩，消除前台等待异步 worker 的延迟尾巴；kswapd 仍走异步流水线。其余参数、批次容量 32、worker 并发上限、统计均不变。实测压力回读 4.5–4.8 s/遍、压力期间异步计数为 0。
 
 ---
 
@@ -172,12 +173,12 @@ CONFIG_ZSMALLOC=y
 ```sh
 slot=$(adb shell getprop ro.boot.slot_suffix | tr -d '\r')
 case "$slot" in _a|_b) ;; *) exit 1 ;; esac
-adb push boot-pulse2-r45-full.img /data/local/tmp/
-adb shell su -c "dd if=/data/local/tmp/boot-pulse2-r45-full.img of=/dev/block/by-name/boot$slot bs=4M conv=fsync"
+adb push boot-pulse2-r46-full.img /data/local/tmp/
+adb shell su -c "dd if=/data/local/tmp/boot-pulse2-r46-full.img of=/dev/block/by-name/boot$slot bs=4M conv=fsync"
 adb shell su -c "sha256sum /dev/block/by-name/boot$slot"
 ```
 
-仅在普通安装场景下使用上述命令，OTA 等待重启时用 AK3 选槽。读回 SHA-256 为 `185949de040f4e7a91d4644dbeb73b3e666dafe5e80ade691bfbfb7c5a99e4d3` 后再重启。
+仅在普通安装场景下使用上述命令，OTA 等待重启时用 AK3 选槽。读回 SHA-256 为 `3b4d9ffff51ccdfefc008c5954a014120838459ce032fc0314ba09b2d2085403` 后再重启。
 
 ```sh
 adb reboot
@@ -193,7 +194,23 @@ KernelSU 中直接刷入 `Pulse-MemGuard-v1.2.0.zip`，重启生效。
 
 ---
 
-## 验证记录（Pulse2 / build `#45`，真机 `_a` 槽）
+## 验证记录（Pulse2 / build `#46`，真机 `_a` 槽）
+
+设备：RMX3888 / ColorOS 17 `RMX3888_17.0.0.120(CN01)` / 槽位 `_a` / KernelSU 3.3.1-55
+
+`#46` 用 `dd` 写入 `boot_a`，回读整盘 md5 `fe8563056b284390ee0b2561e644ab83` 与镜像一致；真重启后 `uname -v` = `#46 SMP PREEMPT Thu Nov 26 02:13:38 CST 2026`，`sys.boot_completed=1`。
+
+| 项 | 结果 |
+|---|---|
+| 编译 | `make Image` RC=0，0 error |
+| 符号 | `mc_accept` PASS：`crc_changed=0`、`gate_crc=0`、`true_missing=28`、`unexpected=0`；新增导出 18（`kunit_*` 8 + `zs_*` 10，均为新增、不破坏现有符号） |
+| 证书 | `cert_gate` PASS：列表 2714 字节，两张 OEM 公钥都在 `Image` 内 |
+| 网络 | `lsmod` 629；`wlan0`、`rmnet_data0`–`3` UP；modem `ONLINE`；`ping 223.5.5.5` 0% 丢包 |
+| 数据完整性 | 128 MB 匿名页压出 RSS 130952→12 页、回读一致、稀疏回读 PASS |
+| 三组压力回读 | `#45` 全异步 14–35 s/遍；`#45` 全同步 5–6 s/遍；`#46` 混合 4.5–4.8 s/遍，压力期间 `async_batches/payloads/wait=0`（direct 全同步） |
+| 尚待 | kswapd 侧异步仅由构造保证（gate 只排除非 kswapd、异步池已初始化），本机大内存未自然触发 kswapd 匿名压缩；整机保活/深睡/能效仍待专项 |
+
+## 验证记录（Pulse2 / build `#45`，历史）
 
 设备：RMX3888 / ColorOS 17 `RMX3888_17.0.0.120(CN01)` / 槽位 `_a` / KernelSU 3.3.1-55
 
