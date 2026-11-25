@@ -1,6 +1,6 @@
 # Pulse2 build `#45` · memcomp 测试版
 
-Pulse2 是 memcomp 从 Android 6.12 移植到 Linux 6.1.157 的测试系列。`#45` 是本系列当前产物，已写入真我 GT5 Pro（RMX3888 / ColorOS `RMX3888_17.0.0.120(CN01)`）的 `_a` 槽并完成开机、网络、数据回读验收；**未做满压力/保活测试**。仅用于学习交流与个人测试开发，刷写前请备份目标槽的 boot，风险自负。
+Pulse2 是 memcomp 从 Android 6.12 移植到 Linux 6.1.157 的测试系列。`#45` 已写入真我 GT5 Pro（RMX3888 / ColorOS `RMX3888_17.0.0.120(CN01)`）的 `_a` 槽，完成重启、网络、cgroup 限额回收和数据回读验收。仅用于学习交流与个人测试开发，刷写前请备份目标槽的 boot，风险自负。
 
 ## 更新
 
@@ -27,7 +27,22 @@ Pulse2 是 memcomp 从 Android 6.12 移植到 Linux 6.1.157 的测试系列。`#
 - 内核日志无 panic、Oops、OOM kill、`Bad rss-counter`。
 - 989 个模块 CRC 不匹配 0，新增符号缺失 0；`vmlinux.symvers` 与 `#30`–`#41` 逐字节相同。
 - 证书闸门 PASS：列表 2714 字节，两张 OEM 公钥都在 `Image` 内。
-- **未做**：压力/保活测试、深睡唤醒时序、swap 落盘/swapoff（本版无 swap）。
+- 专项压力回读：`memory.high=256 MiB`，写入 768 MiB 匿名内存，四遍逐字节回读一致，退出状态 0。该组 `memory.events high` 增至 12,957，`oom`、`oom_kill` 均为 0。
+- **尚待专项验证**：整机应用保活、深睡唤醒时序、游戏帧时间和能效。本版运行纯 RAM memcomp，无活动 swap。
+
+## 正确性验证补充
+
+| 环境 | 结果 |
+| --- | --- |
+| x86_64 KVM，KASAN、Lockdep、KCSAN | 三套各 123 通过、5 跳过、0 失败 |
+| x86_64 KVM，KCSAN SMP | 5/5，覆盖 token 生命周期、shmem 多等待者发布、真实 Zstd 批次、提交失败回滚和调度对照 |
+| x86_64 KVM，真实 cgroup v2 | 源组移除与跨组回读 5 轮，每轮 8 MiB，内容一致 |
+| ARM64 QEMU TCG | 123 通过、6 跳过、0 失败。64 个可执行匿名页压出后正确取指 |
+
+- 验证摘要收录了 KUnit 适配、跳过原因、测试夹具告警、Workingset 和 memcg 复审，以及仍待定位的异常。
+- 5 小时 14 分钟日用记录中，回读遗漏、发布等待超时、压缩失败、异步失败及 OOM kill 均为 0。异步等待峰值约 145.82 ms，worker 执行区间峰值约 144.31 ms。日用累计值作为后续流畅度和能效对照的起点。
+
+本次补充沿用已冻结的 #45 生产源码、镜像、AK3 和性能参数。验证附件内的测试适配使用独立配置与输出目录。本页面继续作为测试预发布。
 
 ## 下载与安装
 
@@ -39,9 +54,12 @@ Pulse2 是 memcomp 从 Android 6.12 移植到 Linux 6.1.157 的测试系列。`#
 | `config.pulse2-r45`、`vmlinux.symvers-r45` | 本版配置与符号表 |
 | `Pulse-MemGuard-v1.2.0.zip` | 配套 KernelSU 模块，用于屏蔽 ColorOS 厂商内存管理对 memcomp 的干扰。单独安装，重启生效 |
 | `sha256sums-r45.txt` | 本版附件的 SHA-256 校验清单 |
+| `Pulse2-R45-Verification-Report.md` | 验证矩阵、执行条件、结果、源码复审和日用快照 |
+| `Pulse2-R45-Test-Logs.tar.gz` | 脱敏原始记录，包含已归因告警和仍待解释的异常 |
+| `Pulse2-R45-Test-Sources.tar.gz` | 以已发布源码包为基线的测试补丁、配置、用户态测试和复现说明 |
 
 手动写入读回 SHA-256 应为 `185949de040f4e7a91d4644dbeb73b3e666dafe5e80ade691bfbfb7c5a99e4d3`。本机 bootloader 拒绝 `fastboot flash boot_*`，只支持 `dd` 或 AK3。镜像沿用原厂 AVB footer，**不代表通过原厂签名验证**。
 
-本预发布只保留 `#45` 的最新文件，旧版产物已移除，仅在本机留档。
+本预发布集中提供 `#45` 生产产物、对应源码和验证附件。
 
 完整补丁清单与安装说明见[项目 README](https://github.com/ltcdz5/gt5pro-pulse-kernel)。构建见[对应源码说明](https://github.com/ltcdz5/gt5pro-pulse-kernel/tree/main/source-r45)。memcomp 上游为 [nakixii/memcomp](https://github.com/nakixii/memcomp)。PAGEOUT/COLD 修复参考 [ferstar/kernel_manifest](https://github.com/ferstar/kernel_manifest/commit/588b9fef7457b6db587bf57428938bf6d870d435)。

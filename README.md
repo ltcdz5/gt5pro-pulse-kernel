@@ -2,7 +2,7 @@
 
 真我 GT5 Pro（RMX3888 / SM8650 / ColorOS 17）的自编测试内核与配套模块发布仓库。
 
-当前发布版本：**Pulse2 · build `#45`（测试版）**。`#45` 已用 `dd` 写入 `_a` 槽、真重启并完成网络与数据回读验收。[下载预发布](https://github.com/ltcdz5/gt5pro-pulse-kernel/releases/tag/pulse2-r45)
+当前发布版本：**Pulse2 · build `#45`（测试版）**。本机已完成 `_a` 槽刷写与重启、网络检查、cgroup 限额回收和匿名页数据回读。[下载预发布与验证附件](https://github.com/ltcdz5/gt5pro-pulse-kernel/releases/tag/pulse2-r45)
 
 ---
 
@@ -10,7 +10,7 @@
 
 - 本项目**仅用于学习交流与个人测试开发**，不是正式稳定版，也不面向日常使用。
 - `#45` 的刷写和重启验收范围为**真我 GT5 Pro（RMX3888）ColorOS 17 `RMX3888_17.0.0.120(CN01)`**，本机写入 `_a` 槽；其他机型、其他固件不作保证。
-- `#45` 只做了开机、网络与数据回读等基础验收，**没有跑满压力/保活测试**，也不保证日常使用稳定，请自行承担刷入风险。
+- `#45` 已通过独立 cgroup 的匿名页压力回读专项。整机应用保活和深睡唤醒时序仍待专项验证，请自行承担刷入风险。
 - 刷入内核/模块属于修改系统分区的操作，存在变砖、丢数据、失去保修等风险，请自行备份 `boot` 分区。
 - 作者不对任何人使用本仓库内容造成的任何直接或间接损失负责。使用即表示你已理解并自愿承担全部风险。
 
@@ -41,7 +41,7 @@
 
 ### A. 稳定性与功耗修复
 
-1. `kernel/power/wakelock.c`：`__pm_stay_awake` → `__pm_wakeup_event(ws, 500)`，避免唤醒源永久持锁
+1. `kernel/power/wakelock.c`：`#45` 恢复无超时唤醒锁的 `__pm_stay_awake()` 语义，持锁至显式 `wake_unlock`
 2. `kernel/time/alarmtimer.c`：闹钟唤醒上报改为 `pm_wakeup_event(dev, ktime_to_ms(min) + 1)`
 3. `net/ipv4/af_inet.c`：`kfree` → `kfree_rcu`，消除 RCU 读侧释放风险
 4. `net/ipv4/tcp_ipv4.c`：同上
@@ -115,7 +115,7 @@ CONFIG_ZSMALLOC=y
 - `#37` 把 tmpfs 压缩条目的发布等待改为有界布尔返回：4 轮 × 50 ms，仍未发布则直接走 `-EEXIST` 重试，不再在等待后反复分配与记账，超时计入 `cache_publish_wait_timeout`。缓存 shadow 指针加空值防护；memcg 标识已离线时，回读改记到最近的在线祖先，与 swap 路径一致。**本版未上机验证。**
 - `#39` 把异步批次的启动判据从"批次总页数"改为"实际需要压缩的页数"：先提交、扫出 same-fill 页后再判断，不足 8 页不唤醒 worker 而是直接同步存储，同时避免小批次多扫一遍页。软件 worker 的并发上限设为 `min(online_cpus, 批次数) - 1`，与后台压缩预算同口径。新增 `async_batches`、`async_compressible_pages`、`async_pool_empty`、`async_store_fail_pages`、`async_early_complete`、`async_active_peak` 及排队/执行/等待三组耗时统计。**本版未上机验证。**
 - `#41` tmpfs 压缩条目在锁内完成 token 发布与唤醒，读方等待不再跨锁睡眠；大 folio 的子页 token 从头部基址构造，预约期间拆分返回 `-EBUSY` 并计数；`memcomp.shmem=`、`memcomp.disabled=` 改为按布尔解析；`workingset` 的 refault 记账推迟到 PTE/`XArray` 安装成功之后。**本版未上机验证。**
-- `#45` 8 项审计修复：tmpfs 边界页在压缩发布完成后才清零；`vmscan` 不再跳过普通页的 unmap 失败统计；两张 OEM 公钥进入构建输入并加证书闸门；SSG 请求对 `blkg` 取引用、完成时归还；F2FS 固定输出布局阻止 `cross_block` 负索引；alarmtimer 负差值限制后转超时、唤醒锁恢复无超时语义；UFS `PA_PWRMODE` 读取失败不再使用未初始化值；TCP Brutal 切出时还原 `sk_prot` 并加 socket 锁。**已上机，未做压力测试。**
+- `#45` 8 项审计修复：tmpfs 边界页在压缩发布完成后才清零；`vmscan` 不再跳过普通页的 unmap 失败统计；两张 OEM 公钥进入构建输入并加证书闸门；SSG 请求对 `blkg` 取引用、完成时归还；F2FS 固定输出布局阻止 `cross_block` 负索引；alarmtimer 负差值限制后转超时、唤醒锁恢复无超时语义；UFS `PA_PWRMODE` 读取失败不再使用未初始化值；TCP Brutal 切出时还原 `sk_prot` 并加 socket 锁。
 
 ---
 
@@ -210,23 +210,32 @@ KernelSU 中直接刷入 `Pulse-MemGuard-v1.2.0.zip`，重启生效。
 | 网络 | `wlan0` UP；`rmnet_data0`–`3` UP；modem `ONLINE`；`ping 223.5.5.5` 3/3、0% 丢包（36–82 ms） |
 | 数据回读 | 128 MB 匿名页填充→压出（RSS 130952→12 页）→回读一致；稀疏页序回读也一致 |
 | 唤醒锁 | 无超时锁写入后持续持有，`wake_unlock` 后释放 |
-| 压力/保活 | **未做** |
+| 匿名页压力回读 | `memory.high=256 MiB`，分配 768 MiB，四遍逐字节回读一致，退出状态 0 |
+| 整机应用保活 | **未做专项测试** |
 | 深睡 | **未测**（验收时插着 USB） |
 | 配套模块 | 预发布提供 `Pulse-MemGuard-v1.2.0.zip`，本版开机验收时未单独测试其效果 |
 
 `#39`、`#41` 只有离线记录，未上机。
 
+### 验证附件
+
+- x86_64 KVM 的 KASAN、Lockdep、KCSAN 三套完整结果各为 123 通过、5 跳过、0 失败。KCSAN SMP 专项 5/5。真实 cgroup v2 离线后跨组回读 5 轮，每轮 8 MiB。
+- ARM64 QEMU TCG 为 123 通过、6 跳过、0 失败，另有 64 个可执行匿名页压出后回读并正确执行。跳过项包括 soft-dirty、swap UFFD-WP 和 ARM64 MTE 条件。
+- 真机日用快照覆盖 5 小时 14 分钟，记录压缩、异步批次、回读及等待的累计值。快照用于观察日用状态，受控流畅度对照需另测。
+- Workingset 在 PTE 或页缓存安装成功后记 refault。memcg 复审核对了预留时的祖先回退、回读时的 `mm` 回退和 objcg 转挂。跨组测试验证了回读数据，objcg 引用和计费依据来自源码复审。
+- [报告、脱敏原始日志和测试源码包](https://github.com/ltcdz5/gt5pro-pulse-kernel/releases/tag/pulse2-r45)见 #45 预发布附件。测试适配使用单独配置和输出目录，现有 #45 生产镜像沿用发布时的哈希。
+
 ## 已知问题
 
 - **这是测试版**，建议保留原厂 boot 备份。
-- `mincore()` 的 memcomp 驻留查询在本树仍未接线，压缩后的页仍报"驻留"（`MINCORE-RESIDENT` 全量）。这不会返回错误数据，但结果偏保守。
+- `mincore()` 已接入 memcomp 驻留查询。纯 RAM 的有效压缩条目允许报告为驻留，即使对应页已从进程 RSS 移出。判断回收或回读须结合 RSS、memcomp 统计和内容校验。
 - 关闭 zram 后，依赖内核 zram API 的厂商模块不会加载（例如 hybridswap 相关模块）。
 - 三个 OPPO 私有模块（`oplus_bsp_sched_ext`、`oplus_bsp_game_opt`、`oplus_bsp_mm_ermreclaimd`）因公开源码缺少对应导出而无法加载。
 - 未验证整机 swap 落盘/swapoff 场景（本版无 swap）。
 - `UFFDIO_MOVE` 的迁移等待与重试记账已在 `#31` 修正，并发 PMD 切换专项回归尚未补。
 - 软异步压缩的 CPU 预算与同步压缩独立，极端负载下可能叠加；worker 并发、排队与执行耗时统计已补齐，但没有整机功耗与帧时间数据。
-- `#45` 未做满压力/保活测试，也未测深睡唤醒时序（`/sys/kernel/debug/wakeup_sources` 在本机不存在）。
-- `#45` 的修复 01、02、05、07 触发条件较窄（tmpfs 边界截断、普通页 unmap 失败、F2FS 固定输出布局、UFS DME 读失败），只有代码级与编译验证。
+- `#45` 的整机应用保活和深睡唤醒时序未做专项验证。
+- `#45` 的 tmpfs 边界打洞和跨页打洞已有离线 KUnit 执行记录。普通页 unmap 失败、F2FS 固定输出布局和 UFS DME 读失败仍以源码、编译核对为主。
 
 ---
 
