@@ -85,7 +85,7 @@ CONFIG_ZSMALLOC=y
 
 - memcomp 以内存压缩直接替代 swap 压缩链路，压缩后数据留在 RAM，不做落盘
 - 6.1 适配由本仓库完成（上游目标为 6.11+），主要适配点：`folio->private` 承载 swap 条目、vmscan 回收接入、rmap unmap 路径、shmem 条目、大 folio 子页 token
-- 默认开启匿名页异步批量压缩和 shmem/tmpfs 压缩。Zstd 缺少异步驱动时，由内核工作队列处理批次。可用引导参数 `memcomp.async=0` 或 `memcomp.shmem=0` 分别关闭对应路径来做对照
+- 从 `#46` 起，默认只对 kswapd 后台回收启用软件异步批量压缩；direct reclaim、memcg 定向回收和 `MADV_PAGEOUT` 走同步内联压缩。shmem/tmpfs 压缩默认开启。Zstd 缺少异步驱动时，由内核工作队列处理批次。可用引导参数 `memcomp.async=0` 或 `memcomp.shmem=0` 分别关闭对应路径来做对照
 - **关闭 zram 是本版设计选择**：memcomp 与 zram 不能共存，依赖内核 zram API 的厂商模块（如 hybridswap）在本版不会加载
 
 ### F. 其它
