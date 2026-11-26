@@ -4,7 +4,7 @@
 
 这是一个围绕 **memcomp 内存压缩** 的 **Linux 6.1.157 内核** 移植与测试项目，目标设备为真我 GT5 Pro（RMX3888 / SM8650 / ColorOS 17 / Android 17）。内容包括 **memcomp 6.1 内核移植**、Pulse2 测试构建、Zstd/LZ4 运行时切换、KernelSU WebUI 监控和厂商内存管理屏蔽模块。
 
-English: **Linux 6.1.157 kernel with memcomp memory compression for Realme GT5 Pro (RMX3888 / SM8650 / ColorOS 17).**
+English: **Linux 6.1.157 memcomp kernel with memory compression for Realme GT5 Pro (RMX3888 / SM8650 / ColorOS 17).**
 
 当前发布版本 **Pulse2 · build `#50`（测试版）**，配套 **Pulse MemGuard v1.3.1**。支持即时切换 Zstd 和 LZ4、调整后台异步策略，并在 KernelSU WebUI 查看实时统计。[下载预发布与验证附件](https://github.com/ltcdz5/gt5pro-pulse-kernel/releases/tag/pulse2-r50)
 
