@@ -1,0 +1,78 @@
+--- a/mm/memcomp.c
++++ b/mm/memcomp.c
+@@ -5004,7 +5004,7 @@
+ 
+ struct memcomp_async *memcomp_async_get(void)
+ {
+-	if (!memcomp_is_enabled())
++	if (!memcomp_is_enabled() || !READ_ONCE(memcomp_async_on))
+ 		return NULL;
+ 	/* Pairs with async_init's release publication of a late pool. */
+ 	if (!smp_load_acquire(&memcomp_async_pool.ready))
+@@ -5019,7 +5019,7 @@
+  */
+ struct memcomp_async *memcomp_async_get_spare(void)
+ {
+-	if (!memcomp_is_enabled())
++	if (!memcomp_is_enabled() || !READ_ONCE(memcomp_async_on))
+ 		return NULL;
+ 	/* Pairs with async_init's release publication of a late pool. */
+ 	if (!smp_load_acquire(&memcomp_async_pool.ready))
+@@ -5353,7 +5353,7 @@
+ 	unsigned int i, j;
+ 
+ 	lockdep_assert_held(&memcomp_select_lock);
+-	if (pool->ready || !memcomp_async_on)
++	if (pool->ready || !READ_ONCE(memcomp_async_on))
+ 		return;
+ 
+ 	tfm = crypto_alloc_acomp(compressor, CRYPTO_ALG_ASYNC,
+@@ -5803,6 +5803,32 @@
+ 	return len;
+ }
+ 
++static ssize_t async_enabled_show(struct kobject *kobj,
++				  struct kobj_attribute *attr, char *buf)
++{
++	if (!memcomp_is_enabled() ||
++	    !smp_load_acquire(&memcomp_async_pool.ready))
++		return sysfs_emit(buf, "unavailable\n");
++
++	return sysfs_emit(buf, "%u\n", READ_ONCE(memcomp_async_on));
++}
++
++static ssize_t async_enabled_store(struct kobject *kobj,
++				   struct kobj_attribute *attr,
++				   const char *buf, size_t count)
++{
++	bool enabled;
++
++	if (kstrtobool(buf, &enabled))
++		return -EINVAL;
++	if (!memcomp_is_enabled() ||
++	    !smp_load_acquire(&memcomp_async_pool.ready))
++		return -EOPNOTSUPP;
++
++	WRITE_ONCE(memcomp_async_on, enabled);
++	return count;
++}
++
+ #ifdef CONFIG_MEMCOMP_DEBUG_STATS
+ /* The span upkeep part of execution_events, appended at @len. */
+ static ssize_t memcomp_span_events_show(char *buf, ssize_t len)
+@@ -6451,6 +6477,7 @@
+ 
+ static struct kobj_attribute stat_attr = __ATTR_RO(stat);
+ static struct kobj_attribute compressor_attr = __ATTR_RO(compressor);
++static struct kobj_attribute async_enabled_attr = __ATTR_RW(async_enabled);
+ #ifdef CONFIG_MEMCOMP_DEBUG_STATS
+ static struct kobj_attribute placement_events_attr =
+ 	__ATTR_RO(placement_events);
+@@ -6468,6 +6495,7 @@
+ static struct attribute *memcomp_attrs[] = {
+ 	&stat_attr.attr,
+ 	&compressor_attr.attr,
++	&async_enabled_attr.attr,
+ #ifdef CONFIG_MEMCOMP_DEBUG_STATS
+ 	&placement_events_attr.attr,
+ 	&packed_swap_events_attr.attr,
