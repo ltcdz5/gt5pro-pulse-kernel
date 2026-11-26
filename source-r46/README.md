@@ -18,8 +18,8 @@ CLANG_BIN=/path/to/clang/bin bash build.sh
 | `vendor/oplus/kernel` | 内核树符号链接引用的 OnePlusOSS 厂商源码 |
 | `config.pulse2-r46` | 最终 `.config`，与发布镜像一致 |
 | `build.sh` | 构建脚本 |
-| `cert_gate.sh` | 证书闸门，校验 `Image` 内的 OEM 公钥列表 |
-| `patches/pulse2-r46-vs-r45-vmscan.patch` | 相对 `#45` 的唯一生产代码改动 |
+| `cert_gate.sh` | 校验构建输出 `certs/x509_certificate_list` 中的 OEM 公钥列表 |
+| `patches/pulse2-r46-vs-r45-vmscan.patch` | 相对 `#45` 的 memcomp 回收策略补丁 |
 
 ## 证书
 
@@ -35,6 +35,10 @@ bash cert_gate.sh ./out-r46 ./kernel/common
 
 - `mm/vmscan.c` 的 `memcomp_may_defer()`：非 kswapd 来源直接返回 false。前台 direct / memcg 定向回收、`MADV_PAGEOUT` 改走同步内联压缩，消除等待异步 worker 的延迟尾巴；kswapd 后台回收仍走异步流水线。批次容量、启动阈值、worker 并发上限、统计与配置均不变。
 
-本版配置与 `#45` 相同（`diff=0`），都含 `CONFIG_KUNIT=y`。KUnit 框架随正式镜像编入，`vmlinux.symvers` 因此比 `#45` 多 8 个 `kunit_*` 导出（`__kunit_activate_static_stub`、`kunit_add_action`、`kunit_add_action_or_reset`、`kunit_deactivate_static_stub`、`kunit_get_static_stub_address`、`kunit_release_action`、`kunit_remove_action`、`kunit_vm_mmap`），来自 `lib/kunit/static_stub.c`、`resource.c`、`user_alloc.c` 的 6.1 测试框架回移代码。它们是新增导出，不改变生产路径，也不影响厂商模块；若发布要求测试框架不进入内核，需以 `KUNIT=n`、`KUNIT_DEBUGFS=n` 重编。
+两个发布配置逐字节相同，均启用了 `CONFIG_KUNIT=y`、`CONFIG_KUNIT_DEBUGFS=y` 和 `CONFIG_ZSMALLOC=y`。`#46` 源码还包含测试适配，涉及 `init/main.c` 的 `kunit_run_all_tests()` 启动入口、KUnit `user_alloc.o`、memcomp 测试和 x86 测试构建。发布配置默认关闭 KUnit 执行，memcomp KUnit 套件也未启用。
+
+相对 `#45` 发布符号表，`#46` 新增 8 个 KUnit 导出。其中 3 个来自 `lib/kunit/static_stub.c`、4 个来自 `lib/kunit/resource.c`、`kunit_vm_mmap` 来自本版加入构建的 `lib/kunit/user_alloc.c`。前 7 个的声明已存在于 `#45` 源码归档，但未列入 `#45` 发布符号表。相对共享基线还多 10 个 `zs_*` 导出，来自内置的 zsmalloc，`#45` 已包含。两组对比均未发现既有符号 CRC 变化或移除。
+
+如需隔离发布构建中的 KUnit 框架，应使用 `CONFIG_KUNIT=n` 的独立发布配置构建并重新核对符号表。`CONFIG_KUNIT_DEBUGFS` 随 KUnit 关闭。
 
 基线为 [OnePlusOSS 内核](https://github.com/OnePlusOSS/android_kernel_common_oneplus_sm8635/tree/oneplus/sm8635_b_16.0.0_nord_5) 与 [OnePlusOSS 厂商源码](https://github.com/OnePlusOSS/android_kernel_modules_and_devicetree_oneplus_sm8635/tree/oneplus/sm8635_b_16.0.0_nord_5)。memcomp 来自 [nakixii/memcomp](https://github.com/nakixii/memcomp/tree/memcomp-v1-rfc)。原版权声明及许可证保留在源码包内。

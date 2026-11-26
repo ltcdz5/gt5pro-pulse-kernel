@@ -2,15 +2,15 @@
 
 真我 GT5 Pro（RMX3888 / SM8650 / ColorOS 17）的自编测试内核与配套模块发布仓库。
 
-当前发布版本：**Pulse2 · build `#46`（测试版）**。本机已完成 `_a` 槽刷写与重启、网络检查、cgroup 限额回收和匿名页数据回读；本版把软件异步压缩限定给 kswapd 后台回收，前台直接回收改同步，压力回读从 14–35 s/遍降到 4.5–4.8 s/遍。[下载预发布与验证附件](https://github.com/ltcdz5/gt5pro-pulse-kernel/releases/tag/pulse2-r46)
+当前发布版本：**Pulse2 · build `#47`（测试版）**。本机已完成 `_a` 槽刷写与重启、网络检查和 60 应用保活实测；本版把后台回收收尾阶段的尾批改为同步存储，消除没有重叠机会的异步等批。离线三对对照中，每千个后台成功压缩页的等批时间中位数从 24.49 ms 降到 2.41 ms。[下载预发布与验证附件](https://github.com/ltcdz5/gt5pro-pulse-kernel/releases/tag/pulse2-r47)
 
 ---
 
 ## 免责声明
 
 - 本项目**仅用于学习交流与个人测试开发**，不是正式稳定版，也不面向日常使用。
-- `#46` 的刷写和重启验收范围为**真我 GT5 Pro（RMX3888）ColorOS 17 `RMX3888_17.0.0.120(CN01)`**，本机写入 `_a` 槽；其他机型、其他固件不作保证。
-- `#46` 已通过独立 cgroup 的匿名页压力回读专项。整机应用保活和深睡唤醒时序仍待专项验证，请自行承担刷入风险。
+- `#47` 的刷写和重启验收范围为**真我 GT5 Pro（RMX3888）ColorOS 17 `RMX3888_17.0.0.120(CN01)`**，本机写入 `_a` 槽；其他机型、其他固件不作保证。
+- `#47` 已通过离线数据回读和真机启动验收。60 应用保活只是单轮实测；深睡唤醒时序和拔线能效仍待专项验证，请自行承担刷入风险。
 - 刷入内核/模块属于修改系统分区的操作，存在变砖、丢数据、失去保修等风险，请自行备份 `boot` 分区。
 - 作者不对任何人使用本仓库内容造成的任何直接或间接损失负责。使用即表示你已理解并自愿承担全部风险。
 
@@ -31,7 +31,7 @@
 | 版本 | 说明 |
 |---|---|
 | pulse1 | 基线可用版（不含 memcomp），已写入 `boot_b` 并真重启验收通过，本机日常使用 |
-| pulse2 | 首个带 memcomp 的测试系列。当前产物为 build `#46`（软件异步仅用于 kswapd），已写入 `_a` 槽并完成基础功能验收 |
+| pulse2 | 首个带 memcomp 的测试系列。当前产物为 build `#47`（kswapd 混合异步，收尾尾批同步），已写入 `_a` 槽并完成基础功能验收 |
 
 ---
 
@@ -85,7 +85,7 @@ CONFIG_ZSMALLOC=y
 
 - memcomp 以内存压缩直接替代 swap 压缩链路，压缩后数据留在 RAM，不做落盘
 - 6.1 适配由本仓库完成（上游目标为 6.11+），主要适配点：`folio->private` 承载 swap 条目、vmscan 回收接入、rmap unmap 路径、shmem 条目、大 folio 子页 token
-- 从 `#46` 起，默认只对 kswapd 后台回收启用软件异步批量压缩；direct reclaim、memcg 定向回收和 `MADV_PAGEOUT` 走同步内联压缩。shmem/tmpfs 压缩默认开启。Zstd 缺少异步驱动时，由内核工作队列处理批次。可用引导参数 `memcomp.async=0` 或 `memcomp.shmem=0` 分别关闭对应路径来做对照
+- 从 `#46` 起，默认只对 kswapd 后台回收启用软件异步批量压缩；direct reclaim、memcg 定向回收和 `MADV_PAGEOUT` 走同步内联压缩。`#47` 进一步把回收收尾、没有重叠机会的尾批改走同步存储。shmem/tmpfs 压缩默认开启。Zstd 缺少异步驱动时，由内核工作队列处理批次。可用引导参数 `memcomp.async=0` 或 `memcomp.shmem=0` 分别关闭对应路径来做对照
 - **关闭 zram 是本版设计选择**：memcomp 与 zram 不能共存，依赖内核 zram API 的厂商模块（如 hybridswap）在本版不会加载
 
 ### F. 其它
@@ -106,7 +106,7 @@ CONFIG_ZSMALLOC=y
 
 **刻意不接的部分**：上游 v1-0009（大 folio 批量 unmap）和 v1-0010（恢复大 folio 的 deferred split）。6.1 只有 order-0 与 PMD THP（512 页），而 `MEMCOMP_MAX_COMPRESS_PAGES=16` 会让 PMD THP 在 reserve 阶段就被拒绝，这两条路径在当前配置下不可达；0009 依赖的 `get_and_clear_full_ptes()` / `pte_advance_pfn()` / `folio_remove_rmap_ptes()` 本树也没有 6.1 实现，硬接线无法编译。等将来提高压缩页数上限或回移 mTHP 再补。
 
-### H. PAGEOUT/COLD、UFFDIO_MOVE 与并发修复（build `#29`–`#46`）
+### H. PAGEOUT/COLD、UFFDIO_MOVE 与并发修复（build `#29`–`#47`）
 
 - `#29` 修正 `mm/madvise.c` 中 `MADV_PAGEOUT` / `MADV_COLD` 对普通 swap 条目的判断，保留 memcomp 条目的处理分支。重复操作后压缩条目保持有效，回读一致。
 - `#30` 调整 `mm/userfaultfd.c` 中 `UFFDIO_MOVE` 的检查顺序。先验证 PMD，再取 PTE 地址和锁。真机已校验普通压缩条目、零页、共享页拒绝、整块 2 MiB 移动，以及拆分后的 4 KiB 移动。
@@ -117,6 +117,7 @@ CONFIG_ZSMALLOC=y
 - `#41` tmpfs 压缩条目在锁内完成 token 发布与唤醒，读方等待不再跨锁睡眠；大 folio 的子页 token 从头部基址构造，预约期间拆分返回 `-EBUSY` 并计数；`memcomp.shmem=`、`memcomp.disabled=` 改为按布尔解析；`workingset` 的 refault 记账推迟到 PTE/`XArray` 安装成功之后。**本版未上机验证。**
 - `#45` 8 项审计修复：tmpfs 边界页在压缩发布完成后才清零；`vmscan` 不再跳过普通页的 unmap 失败统计；两张 OEM 公钥进入构建输入并加证书闸门；SSG 请求对 `blkg` 取引用、完成时归还；F2FS 固定输出布局阻止 `cross_block` 负索引；alarmtimer 负差值限制后转超时、唤醒锁恢复无超时语义；UFS `PA_PWRMODE` 读取失败不再使用未初始化值；TCP Brutal 切出时还原 `sk_prot` 并加 socket 锁。
 - `#46` 把软件异步压缩限定为 kswapd 后台回收：`mm/vmscan.c` 的 `memcomp_may_defer()` 对非 kswapd 来源（direct / memcg 定向回收、`MADV_PAGEOUT`）直接返回 false，走同步内联压缩，消除前台等待异步 worker 的延迟尾巴；kswapd 仍走异步流水线。其余参数、批次容量 32、worker 并发上限、统计均不变。实测压力回读 4.5–4.8 s/遍、压力期间异步计数为 0。
+- `#47` 减少 kswapd 的无效等批：`mm/vmscan.c` 的 `memcomp_submit_deferred()` 增加 `allow_async`。回收扫描收尾且没有上一批正在压缩时，尾批直接同步存储；扫描前或中途满批、上一批仍在压缩时，提交条件与 `#46` 一致。离线三对对照的每千页等批时间中位数由 24.49 ms 降至 2.41 ms，完整回读通过。
 
 ---
 
@@ -161,11 +162,11 @@ CONFIG_ZSMALLOC=y
 
 前提：已解锁 bootloader，设备为 RMX3888 / ColorOS `RMX3888_17.0.0.120(CN01)`，已备份。
 
-在支持 AnyKernel3 的 root 刷机工具中选择 `Pulse2-AK3-RMX3888-17.0.0.120-46.zip`。安装器执行以下步骤。
+在支持 AnyKernel3 的 root 刷机工具中选择 `Pulse2-AK3-RMX3888-17.0.0.120-47.zip`。安装器执行以下步骤。
 
 - 读 `ro.boot.slot_suffix`，默认刷**当前槽位**；
 - 检测到系统已完成 OTA 并安排下次从另一槽启动时，改刷 OTA 目标槽；
-- 校验目标槽现有 boot 必须在包内白名单：`.120` 原厂、Pulse1，或该固件对应的历史 Pulse2 镜像（`anykernel.sh` 内按 9 个具体 SHA-256 匹配，不按版本号匹配）；`#45` 可直接升级，目标槽已是 `#46` 时提示已安装并退出；不在白名单的镜像即使版本号相同也会拒绝，并打印当前 SHA-256；
+- 按目标槽的完整 boot SHA-256 检查白名单。可写的 13 个值包括 `.120` 原厂、Pulse1、9 个更早的 Pulse2 镜像和发布版 `#45`、`#46`。目标槽与发布版 `#47` 完整镜像一致时提示已安装并退出。其余值会被拒绝并打印当前 SHA-256；
 - 只写 `boot_a` / `boot_b`，写完回读 SHA-256 校验。
 
 ### 内核（手动 dd）
@@ -173,12 +174,12 @@ CONFIG_ZSMALLOC=y
 ```sh
 slot=$(adb shell getprop ro.boot.slot_suffix | tr -d '\r')
 case "$slot" in _a|_b) ;; *) exit 1 ;; esac
-adb push boot-pulse2-r46-full.img /data/local/tmp/
-adb shell su -c "dd if=/data/local/tmp/boot-pulse2-r46-full.img of=/dev/block/by-name/boot$slot bs=4M conv=fsync"
+adb push boot-pulse2-r47-full.img /data/local/tmp/
+adb shell su -c "dd if=/data/local/tmp/boot-pulse2-r47-full.img of=/dev/block/by-name/boot$slot bs=4M conv=fsync"
 adb shell su -c "sha256sum /dev/block/by-name/boot$slot"
 ```
 
-仅在普通安装场景下使用上述命令，OTA 等待重启时用 AK3 选槽。读回 SHA-256 为 `3b4d9ffff51ccdfefc008c5954a014120838459ce032fc0314ba09b2d2085403` 后再重启。
+仅在普通安装场景下使用上述命令，OTA 等待重启时用 AK3 选槽。读回 SHA-256 为 `445160d9f7e1019a54f979ba6145a5d8584f12d3b966f8272e46c31579057850` 后再重启。
 
 ```sh
 adb reboot
@@ -194,11 +195,11 @@ KernelSU 中直接刷入 `Pulse-MemGuard-v1.2.0.zip`，重启生效。
 
 ---
 
-## 验证记录（Pulse2 / build `#46`，真机 `_a` 槽）
+## 验证记录（Pulse2 / build `#47`，真机 `_a` 槽）
 
 设备：RMX3888 / ColorOS 17 `RMX3888_17.0.0.120(CN01)` / 槽位 `_a` / KernelSU 3.3.1-55
 
-`#46` 用 `dd` 写入 `boot_a`，回读整盘 md5 `fe8563056b284390ee0b2561e644ab83` 与镜像一致；真重启后 `uname -v` = `#46 SMP PREEMPT Thu Nov 26 02:13:38 CST 2026`，`sys.boot_completed=1`。
+`#47` 用 `dd` 写入 `boot_a`，回读 SHA-256 `445160d9f7e1019a54f979ba6145a5d8584f12d3b966f8272e46c31579057850` 与镜像一致；真重启后 `uname -v` = `#47 SMP PREEMPT Thu Nov 26 12:51:17 CST 2026`，`sys.boot_completed=1`。
 
 | 项 | 结果 |
 |---|---|
@@ -206,11 +207,13 @@ KernelSU 中直接刷入 `Pulse-MemGuard-v1.2.0.zip`，重启生效。
 | 符号 | `mc_accept` PASS：`crc_changed=0`、`gate_crc=0`、`true_missing=28`、`unexpected=0`；相对共享基线新增 18（`kunit_*` 8 + `zs_*` 10），相对 `#45` 仅新增 8 个 `kunit_*`。`zs_*` 来自内置 `ZSMALLOC=y`（`#45` 已存在），`kunit_*` 来自 `CONFIG_KUNIT=y` 的测试框架，均为新增导出、不破坏现有符号 |
 | 证书 | `cert_gate` PASS：列表 2714 字节，两张 OEM 公钥都在 `Image` 内 |
 | 网络 | `lsmod` 629；`wlan0`、`rmnet_data0`–`3` UP；modem `ONLINE`；`ping 223.5.5.5` 0% 丢包 |
-| 数据完整性 | 128 MB 匿名页压出 RSS 130952→12 页、回读一致、稀疏回读 PASS |
-| 三组压力回读 | `#45` 全异步 14–35 s/遍；`#45` 全同步 5–6 s/遍；`#46` 混合 4.5–4.8 s/遍，压力期间 `async_batches/payloads/wait=0`（direct 全同步） |
-| 尚待 | kswapd 侧异步仅由构造保证（gate 只排除非 kswapd、异步池已初始化），本机大内存未自然触发 kswapd 匿名压缩；整机保活/深睡/能效仍待专项 |
+| 离线回读 | ARM64 QEMU 三对 #46 / #47 交叉、六次 760 MiB 匿名页完整回读通过；`async_fail`、`async_queue_fail`、`compress_fail`、`zs_fail`、`oom_kill` 增量均为 0 |
+| 整机保活 | 一轮 60 应用启动切换测试保活 58 个；内核 OOM 与 memcomp 压缩失败计数均为 0 |
+| 覆盖范围 | 离线对照覆盖后台 kswapd 回收和尾批策略。整机帧时间、深睡和拔线能效仍需专项验证 |
 
-构建待办：`#45`、`#46` 的配置都是 `CONFIG_KUNIT=y`，正式镜像因此包含 KUnit 框架并带出 8 个 `kunit_*` 导出（不影响厂商模块，生产路径未变）。若要求"测试代码不进正式构建"，需以 `KUNIT=n`、`KUNIT_DEBUGFS=n` 重编并重新发布，列入下一轮。
+`#46` 的三组压力回读（全异步 14–35 s/遍、全同步 5–6 s/遍、混合 4.5–4.8 s/遍）保留在 `#46` 预发布记录。
+
+`#45`–`#47` 均配置了 `CONFIG_KUNIT=y`。`#46` 起恢复了 KUnit 启动入口并编入辅助代码。发布配置默认关闭 KUnit 执行，memcomp KUnit 套件也未启用。正式构建的测试框架隔离列为独立待办，详情见[构建说明](source-r47/README.md)。
 
 ## 验证记录（Pulse2 / build `#45`，历史）
 
@@ -242,7 +245,7 @@ KernelSU 中直接刷入 `Pulse-MemGuard-v1.2.0.zip`，重启生效。
 - ARM64 QEMU TCG 为 123 通过、6 跳过、0 失败，另有 64 个可执行匿名页压出后回读并正确执行。跳过项包括 soft-dirty、swap UFFD-WP 和 ARM64 MTE 条件。
 - 真机日用快照覆盖 5 小时 14 分钟，记录压缩、异步批次、回读及等待的累计值。快照用于观察日用状态，受控流畅度对照需另测。
 - Workingset 在 PTE 或页缓存安装成功后记 refault。memcg 复审核对了预留时的祖先回退、回读时的 `mm` 回退和 objcg 转挂。跨组测试验证了回读数据，objcg 引用和计费依据来自源码复审。
-- [报告与验证附件](https://github.com/ltcdz5/gt5pro-pulse-kernel/releases/tag/pulse2-r46)见 `#46` 预发布附件。`#45` 的 41 份脱敏日志和测试源码包保留在 `#45` 归档（该发布已转 Draft，不再公开展示）。测试适配使用单独配置和输出目录，现有 `#46` 生产镜像沿用发布时的哈希。
+- [报告与验证附件](https://github.com/ltcdz5/gt5pro-pulse-kernel/releases/tag/pulse2-r47)见 `#47` 预发布附件。`#45`、`#46` 的脱敏日志、测试源码包和构建产物保留在各自归档（均已转 Draft，不再公开展示）。测试适配使用单独配置和输出目录，`#47` 生产镜像沿用发布时的哈希。
 
 ## 已知问题
 
@@ -253,19 +256,19 @@ KernelSU 中直接刷入 `Pulse-MemGuard-v1.2.0.zip`，重启生效。
 - 未验证整机 swap 落盘/swapoff 场景（本版无 swap）。
 - `UFFDIO_MOVE` 的迁移等待与重试记账已在 `#31` 修正，并发 PMD 切换专项回归尚未补。
 - 软异步压缩的 CPU 预算与同步压缩独立，极端负载下可能叠加；worker 并发、排队与执行耗时统计已补齐，但没有整机功耗与帧时间数据。
-- `#45`、`#46` 的整机应用保活和深睡唤醒时序未做专项验证。
-- `#45`、`#46` 的 tmpfs 边界打洞和跨页打洞已有离线 KUnit 执行记录。普通页 unmap 失败、F2FS 固定输出布局和 UFS DME 读失败仍以源码、编译核对为主。
+- `#45`、`#46` 未做整机应用保活专项；`#47` 仅有一轮 60 应用实测，深睡唤醒时序均未测。
+- `#45`–`#47` 的 tmpfs 边界打洞和跨页打洞已有离线 KUnit 执行记录。普通页 unmap 失败、F2FS 固定输出布局和 UFS DME 读失败仍以源码、编译核对为主。
 
 ---
 
 ## 借鉴与复刻声明
 
-`#46` 对应内核源码、OnePlusOSS 厂商源码、配置和构建脚本随预发布提供。[构建说明](source-r46/README.md)
+`#47` 对应内核源码、OnePlusOSS 厂商源码、配置和构建脚本随预发布提供。[构建说明](source-r47/README.md)
 
 | 来源 | 用途 |
 |---|---|
 | [OnePlusOSS/android_kernel_common_oneplus_sm8635](https://github.com/OnePlusOSS/android_kernel_common_oneplus_sm8635) @ `oneplus/sm8635_b_16.0.0_nord_5` | 内核基线源码（GPL-2.0） |
-| [nakixii/memcomp](https://github.com/nakixii/memcomp) | memcomp 上游实现（GPL-2.0），6.1 移植和后续修复随 `#46` 源码包提供 |
+| [nakixii/memcomp](https://github.com/nakixii/memcomp) | memcomp 上游实现（GPL-2.0），6.1 移植和后续修复随 `#47` 源码包提供 |
 | [cctv18/oppo_oplus_realme_sm8650](https://github.com/cctv18/oppo_oplus_realme_sm8650) | LZ4 / zstd / BBRv3 / TCP Brutal / SSG / hide / f2fs 等补丁参考 |
 | [ferstar/kernel_manifest](https://github.com/ferstar/kernel_manifest/commit/588b9fef7457b6db587bf57428938bf6d870d435) | `#29` 的 PAGEOUT/COLD 修复参考，按本树的 memcomp 路径适配 |
 | Linux stable 上游提交 | UFS 修复（提交号见上） |

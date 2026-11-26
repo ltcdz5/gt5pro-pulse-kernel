@@ -1,0 +1,17 @@
+--- /home/builder/kwork/mc/common/mm/vmscan.c.bak-r46	2026-11-26 02:13:08.014375898 +0800
++++ /home/builder/kwork/mc/common/mm/vmscan.c	2026-11-26 02:13:08.014763864 +0800
+@@ -1803,6 +1803,14 @@
+ static bool memcomp_may_defer(struct memcomp_deferred *d,
+ 			      struct folio *folio)
+ {
++	/*
++	 * Only background reclaim gains from handing the batch to a worker: a
++	 * task in direct reclaim is already blocked on memory, so compressing
++	 * inline avoids the queue-and-wait tail without costing anything
++	 * elsewhere.  kswapd keeps the asynchronous path.
++	 */
++	if (d->source != MEMCOMP_RECLAIM_KSWAPD)
++		return false;
+ 	if (folio_nr_pages(folio) > MEMCOMP_ASYNC_PAGES)
+ 		return false;
+ 	if (!d->fill.async)

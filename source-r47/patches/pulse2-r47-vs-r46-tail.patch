@@ -1,0 +1,38 @@
+--- a/mm/vmscan.c
++++ b/mm/vmscan.c
+@@ -1915,7 +1915,7 @@
+  * round.  Too few pages to be worth the compressor's while are stored
+  * straight away.
+  */
+-static void memcomp_submit_deferred(struct memcomp_deferred *d)
++static void memcomp_submit_deferred(struct memcomp_deferred *d, bool allow_async)
+ {
+ 	struct memcomp_deferred_batch *fill = &d->fill;
+ 	struct memcomp_deferred_batch *busy = &d->busy;
+@@ -1931,7 +1931,7 @@
+ 	 * page count bounds that from above, so a batch below the bound skips
+ 	 * the scan here and lets the store do it once.
+ 	 */
+-	if (fill->nr_pages >= MEMCOMP_DEFER_MIN_PAGES) {
++	if (allow_async && fill->nr_pages >= MEMCOMP_DEFER_MIN_PAGES) {
+ 		list_for_each_entry(folio, &fill->folios, lru)
+ 			memcomp_async_submit(fill->async, folio);
+ 		if (memcomp_async_worth_start(fill->async) &&
+@@ -1961,7 +1961,7 @@
+ /* Compress and store all @d has kept back, and give back its batches. */
+ static void memcomp_finish_deferred(struct memcomp_deferred *d)
+ {
+-	memcomp_submit_deferred(d);
++	memcomp_submit_deferred(d, !list_empty(&d->busy.folios));
+ 	memcomp_store_batch(d, &d->busy);
+ 	memcomp_async_put(d->fill.async);
+ 	d->fill.async = NULL;
+@@ -1981,7 +1981,7 @@
+ 			       unsigned int nr_pages)
+ {
+ 	if (d->fill.nr_pages + nr_pages > MEMCOMP_ASYNC_PAGES)
+-		memcomp_submit_deferred(d);
++		memcomp_submit_deferred(d, true);
+ 	if (memcomp_async_complete(d->busy.async))
+ 		memcomp_store_batch(d, &d->busy);
+ 	if (d->fill.async || !d->busy.async ||
