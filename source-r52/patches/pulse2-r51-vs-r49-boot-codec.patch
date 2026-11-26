@@ -1,0 +1,138 @@
+--- a/mm/memcomp.c
++++ b/mm/memcomp.c
+@@ -586,9 +586,16 @@
+ 
+ static char memcomp_compressor[MEMCOMP_COMPRESSOR_NAME_LEN] =
+ 	MEMCOMP_DEFAULT_COMPRESSOR;
++static bool memcomp_codec_wait;
+ /* Serializes compressor selection and publication of an async pool. */
+ static DEFINE_MUTEX(memcomp_select_lock);
+ 
++static int __init memcomp_codec_wait_setup(char *str)
++{
++	return !kstrtobool(str, &memcomp_codec_wait);
++}
++__setup("memcomp.codec_wait=", memcomp_codec_wait_setup);
++
+ static bool memcomp_is_enabled(void)
+ {
+ 	if (memcomp_force_off)
+@@ -5673,6 +5680,7 @@
+ #define MEMCOMP_FALLBACK_COMPRESSOR	"zstd"
+ /* As long as the driver core waits for the modules a device's probe needs. */
+ #define MEMCOMP_COMPRESSOR_WAIT	(10 * HZ)
++#define MEMCOMP_BOOT_CODEC_WAIT	(30 * HZ)
+ 
+ /* The startup decision and late async work share memcomp_select_lock. */
+ struct memcomp_compressor_select {
+@@ -5681,6 +5689,8 @@
+ 	struct memcomp_async_pool *pool;
+ 	char *compressor;
+ 	unsigned long deadline;
++	unsigned long boot_codec_deadline;
++	bool boot_codec_pending;
+ 	bool decided;
+ 	bool started;
+ };
+@@ -5720,11 +5730,21 @@
+ static void memcomp_select_worker(struct work_struct *work)
+ {
+ 	struct memcomp_compressor_select *select;
+-	unsigned long now = jiffies;
++	unsigned long now;
+ 
+ 	select = container_of(to_delayed_work(work),
+ 			      struct memcomp_compressor_select, work);
+ 	mutex_lock(&memcomp_select_lock);
++	now = jiffies;
++	if (select->boot_codec_pending) {
++		if (time_before(now, select->boot_codec_deadline)) {
++			queue_delayed_work(system_unbound_wq, &select->work,
++					   select->boot_codec_deadline - now);
++			goto out;
++		}
++		select->boot_codec_pending = false;
++		select->deadline = now + MEMCOMP_COMPRESSOR_WAIT;
++	}
+ 	if (select->decided) {
+ 		if (select->started)
+ 			memcomp_async_init(select->pool, select->compressor);
+@@ -5772,6 +5792,10 @@
+ 
+ 	/* Listen first, so a registration racing the check is not missed. */
+ 	memcomp_select.deadline = jiffies + MEMCOMP_COMPRESSOR_WAIT;
++	if (IS_ENABLED(CONFIG_SYSFS) && memcomp_codec_wait && !memcomp_force_off) {
++		memcomp_select.boot_codec_pending = true;
++		memcomp_select.boot_codec_deadline = jiffies + MEMCOMP_BOOT_CODEC_WAIT;
++	}
+ 	ret = crypto_register_notifier(&memcomp_select.nb);
+ 	if (ret)
+ 		return ret;
+@@ -5803,6 +5827,51 @@
+ 	return len;
+ }
+ 
++static ssize_t boot_compressor_show(struct kobject *kobj,
++				    struct kobj_attribute *attr, char *buf)
++{
++	const char *state;
++
++	mutex_lock(&memcomp_select_lock);
++	if (!memcomp_codec_wait || memcomp_force_off)
++		state = "unavailable";
++	else if (memcomp_select.boot_codec_pending)
++		state = "pending";
++	else if (!memcomp_select.decided)
++		state = "starting";
++	else
++		state = memcomp_select.started ? "locked" : "unavailable";
++	mutex_unlock(&memcomp_select_lock);
++	return sysfs_emit(buf, "%s\n", state);
++}
++
++static ssize_t boot_compressor_store(struct kobject *kobj,
++				     struct kobj_attribute *attr,
++				     const char *buf, size_t count)
++{
++	const char *name;
++	ssize_t ret = -EBUSY;
++
++	if (sysfs_streq(buf, "zstd"))
++		name = "zstd";
++	else if (sysfs_streq(buf, "lz4"))
++		name = "lz4";
++	else
++		return -EINVAL;
++
++	mutex_lock(&memcomp_select_lock);
++	if (memcomp_select.boot_codec_pending &&
++	    time_before(jiffies, memcomp_select.boot_codec_deadline)) {
++		strscpy(memcomp_compressor, name, sizeof(memcomp_compressor));
++		memcomp_select.boot_codec_pending = false;
++		memcomp_select.deadline = jiffies + MEMCOMP_COMPRESSOR_WAIT;
++		mod_delayed_work(system_unbound_wq, &memcomp_select.work, 0);
++		ret = count;
++	}
++	mutex_unlock(&memcomp_select_lock);
++	return ret;
++}
++
+ static ssize_t async_enabled_show(struct kobject *kobj,
+ 				  struct kobj_attribute *attr, char *buf)
+ {
+@@ -6477,6 +6546,7 @@
+ 
+ static struct kobj_attribute stat_attr = __ATTR_RO(stat);
+ static struct kobj_attribute compressor_attr = __ATTR_RO(compressor);
++static struct kobj_attribute boot_compressor_attr = __ATTR_RW(boot_compressor);
+ static struct kobj_attribute async_enabled_attr = __ATTR_RW(async_enabled);
+ #ifdef CONFIG_MEMCOMP_DEBUG_STATS
+ static struct kobj_attribute placement_events_attr =
+@@ -6495,6 +6565,7 @@
+ static struct attribute *memcomp_attrs[] = {
+ 	&stat_attr.attr,
+ 	&compressor_attr.attr,
++	&boot_compressor_attr.attr,
+ 	&async_enabled_attr.attr,
+ #ifdef CONFIG_MEMCOMP_DEBUG_STATS
+ 	&placement_events_attr.attr,
