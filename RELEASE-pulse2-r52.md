@@ -13,14 +13,14 @@
 ## 验收
 
 - RMX3888 `_a` 槽已用 `dd` 写入 `#52`，回读 SHA-256 一致，真重启后 `boot_completed=1`。Zstd 与后台异步已启用；128 MiB 匿名页压出（RSS 130952 → 12 页）后顺序及稀疏回读一致。
-- Wi-Fi `VALIDATED`，`wlan0` UP；modem `ONLINE`，`rmnet_data0`–`3` 建立；`ping 223.5.5.5` 0% 丢包；`rfkill`、`cfg80211`、`mac80211`、`qca_cld3_kiwi_v2`、`btpower`、`bt_fm_slim` 均已加载。
+- Wi-Fi `VALIDATED`，`wlan0` UP；modem `ONLINE`，`rmnet_data0`–`2` UP；`ping 223.5.5.5` 0% 丢包；`rfkill`、`cfg80211`、`mac80211`、`qca_cld3_kiwi_v2`、`btpower`、`bt_fm_slim` 均已加载。
 - MemGuard 1.4.2 已安装（`versionCode=142`）。`/my_stock/etc/extension` 中仅两份文件为模块生成且 SHA-256 与模块内一致；其余三份保持系统原值。用户手测应用启动与返回桌面恢复流畅。
 - ARM64 QEMU 用同一 `#52` 镜像完成 760 MiB 匿名页混合回读（混合 6.73 s、全同步 7.02 s），两次均通过；开机算法选择、默认和超时回退沿用 `#51` 的验收，`#52` 未重跑。
 
 ## 未覆盖
 
 - 真机 LZ4、60 应用保活专项、长时间稳定性、深睡、功耗和帧时间未在 `#52` 单独复测。
-- MemGuard 1.4.2 安装后未再单独整机重启复核 `post-fs-data` 流程；当前生效状态由 NoMount 挂载视图与模块文件 SHA-256 核对确认。
+- MemGuard 1.4.2 安装后已于 2026-11-27 02:31 整机重启复核：`post-fs-data` 正常完成，`/my_stock/etc/extension` 下仅两份模块覆盖生效（SHA-256 与模块文件一致），三份系统配置保持原值；Wi-Fi、移动数据、蓝牙和 629 个模块加载正常。
 
 ## 下载
 

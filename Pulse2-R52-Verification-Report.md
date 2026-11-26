@@ -17,7 +17,7 @@
 
 - 2026-11-27，RMX3888 / ColorOS `RMX3888_17.0.0.120(CN01)` / `_a`。完整 boot 经 `dd` 写入，回读 SHA-256 `dcacd6cf1707f895f281d70858b55fb6ba2a473a77e9af7dcf8700b8a72541a1`，真重启后 `boot_completed=1`。
 - Zstd、后台异步已启用。128 MiB 匿名页 RSS 从 130952 KiB 降至 12 页，顺序回读与稀疏回读均一致。
-- Wi-Fi `VALIDATED`，`wlan0` UP；modem `ONLINE`，`rmnet_data0`–`3` 建立；`ping 223.5.5.5` 0% 丢包；蓝牙与无线相关模块全部加载。
+- Wi-Fi `VALIDATED`，`wlan0` UP；modem `ONLINE`，`rmnet_data0`–`2` UP；`ping 223.5.5.5` 0% 丢包；蓝牙与无线相关模块全部加载。
 - `compress_fail`、`zs_fail`、`async_fail`、`async_queue_fail` 均为 0。`critical_kernel_logs=4` 均为既有的 `oplus_bsp_game_opt` 未知 tracepoint 符号，与 `#51` 相同。
 
 ## MemGuard 1.4.2
@@ -42,7 +42,13 @@
 
 源码包与其他附件的 SHA-256 见 `sha256sums-r52.txt`。
 
+## 重启复核（2026-11-27）
+
+- 安装 1.4.2 后于 02:31:37 整机重启，`boot_completed=1`，内核仍为 `#52`，Zstd 与后台异步启用。
+- `/my_stock/etc/extension` 仅两份模块覆盖，SHA-256 与模块文件一致；三份系统配置保持原值。
+- Wi-Fi `wlan0` UP、modem `ONLINE`、`rmnet_data0`–`2` UP、`ping 223.5.5.5` 0% 丢包；`lsmod` 629。
+- `PulseBgRetention` 日志无失败记录。
+
 ## 未覆盖
 
 - 真机 LZ4、60 应用保活专项、长时间稳定性、深睡、功耗和帧时间未在 `#52` 单独复测。
-- MemGuard 1.4.2 安装后未再单独整机重启复核 `post-fs-data` 流程；当前生效状态由 NoMount 挂载视图与模块文件 SHA-256 核对确认。
