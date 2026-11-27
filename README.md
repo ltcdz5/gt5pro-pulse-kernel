@@ -4,7 +4,7 @@
 
 English: **memcomp 6.1 kernel port (Linux 6.1.157) with in-RAM memory compression for Realme GT5 Pro (RMX3888 / SM8650 / ColorOS 17).**
 
-当前发布 **Pulse2 · build `#66`（测试版）**，配套 **Pulse MemGuard v1.4.2**。
+当前发布 **Pulse2 · build `#66` 维护测试版**，配套 **Pulse MemGuard v1.4.2**。
 [下载预发布与验证附件](https://github.com/ltcdz5/gt5pro-pulse-kernel/releases/tag/pulse2-r66)
 
 ---
@@ -20,7 +20,9 @@ English: **memcomp 6.1 kernel port (Linux 6.1.157) with in-RAM memory compressio
 
 ## #66 改了什么
 
-相对 `#52` 只改两个文件。
+维护版修复 memcg IDR 锁的中断安全问题，以及 tmpfs 部分打洞或截短时边界页回读失败的处理。沿用 #66 首版的 Zstd 档位、异步 worker 策略和构建配置。
+
+#66 首版相对 `#52` 有两项性能改动。
 
 1. `crypto/zstd.c`：Zstd 默认压缩档从 1 改为 `-1`（负档），单页压缩更快。
 2. `mm/memcomp.c`：软件异步 worker 去掉 `WQ_UNBOUND`，改用 `queue_work_on(raw_smp_processor_id(), ...)` 绑定到发起压缩的 CPU。
@@ -38,7 +40,7 @@ ARM64 QEMU，760 MiB 混合匿名页，四轮中位数：
 
 同核争用（两个线程占满两个 CPU）和 CPU 热插拔（每 150 ms 切一次 CPU，21–22 轮）两版全部 PASS、回读一致、`async_queue_fail=0`。#66 的 kswapd 等批时间从 #65 的 22.7 ms 降到 0，代价是 kswapd 覆盖页数减少约 10%，更多页由分配线程直接压缩。
 
-真机：`_a` 槽 `dd` 写入并真重启，`boot_completed=1`；Zstd、`async_enabled=1`；Wi‑Fi、移动数据、蓝牙驱动正常。
+#66 首版在 `_a` 槽刷入并重启成功，Zstd、后台异步、Wi‑Fi 和移动网络接口均已验证，蓝牙驱动已加载。维护版真机验收待完成。
 
 ---
 
@@ -84,6 +86,7 @@ ARM64 QEMU，760 MiB 混合匿名页，四轮中位数：
 - 读 `ro.boot.slot_suffix`，默认刷当前槽；
 - 检测到 OTA 已安排下次从另一槽启动时，改刷目标槽；
 - 按目标槽完整 boot 的 SHA-256 校验白名单（`.120` 原厂、Pulse1、白名单内的 Pulse2）；
+- 支持 #66 首版升级至维护版，重复安装维护版时直接退出；
 - 只写 `boot_a` / `boot_b`，写完回读校验。
 
 ### 手动 dd
@@ -95,7 +98,7 @@ adb shell su -c "dd if=/data/local/tmp/boot-pulse2-r66-full.img of=/dev/block/by
 adb shell su -c "sha256sum /dev/block/by-name/boot$slot"
 ```
 
-回读 SHA-256 应为 `a027d3bf2076c28360a17a7b9c363921c69defdbe6afcfed77d99eb2a30edfc6` 再重启。
+回读 SHA-256 应为 `10dbf2f66f171c52b528c6a11ac74352b61b5f9b3503cc1bcf794b16231e32db` 再重启。
 
 本机 bootloader 拒绝 `fastboot flash boot_*`（报 `Requested download size is more than max allowed`），`fastboot boot` 可用。仓库只提供 AK3 与 `dd` 两种刷入方式；回退时把备份写回同一个分区。
 
@@ -106,6 +109,10 @@ adb shell su -c "sha256sum /dev/block/by-name/boot$slot"
 ---
 
 ## 验证记录 · #66
+
+维护版构建时间为 `2026-11-27 19:32:12 CST`。普通 KUnit、KASAN、KCSAN 和 Lockdep 四套各 125 项 memcomp 通过、5 项跳过、0 失败。ARM64 QEMU 的 64 页可执行匿名页压出回读及四轮 760 MiB 压出、回读、释放测试均通过。配置、符号表与首版逐字节相同，双 OEM 公钥已核对。
+
+以下为 #66 首版记录。
 
 | 项 | 结果 |
 |---|---|
@@ -129,7 +136,6 @@ adb shell su -c "sha256sum /dev/block/by-name/boot$slot"
 - 关闭 zram 后，依赖内核 zram API 的厂商模块不加载（hybridswap 等）。
 - 三个 OPPO 私有模块因公开源码缺导出无法加载：`oplus_bsp_sched_ext`、`oplus_bsp_game_opt`、`oplus_bsp_mm_ermreclaimd`。
 - 软件异步与同步压缩的 CPU 预算独立，极端负载下可能叠加。
-- `#66` 的离线长跑（soak）覆盖率是 0，没有得出泄漏结论。
 
 ---
 

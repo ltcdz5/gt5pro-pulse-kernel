@@ -1,0 +1,243 @@
+--- a/mm/memcontrol.c
++++ b/mm/memcontrol.c
+@@ -5370,23 +5370,26 @@
+ static int mem_cgroup_alloc_id(void)
+ {
+ 	int ret;
++	unsigned long flags;
+ 
+ 	idr_preload(GFP_KERNEL);
+-	spin_lock(&memcg_idr_lock);
++	spin_lock_irqsave(&memcg_idr_lock, flags);
+ 	ret = idr_alloc(&mem_cgroup_idr, NULL, 1, MEM_CGROUP_ID_MAX + 1,
+ 			GFP_NOWAIT);
+-	spin_unlock(&memcg_idr_lock);
++	spin_unlock_irqrestore(&memcg_idr_lock, flags);
+ 	idr_preload_end();
+ 	return ret;
+ }
+ 
+ static void mem_cgroup_id_remove(struct mem_cgroup *memcg)
+ {
++	unsigned long flags;
++
+ 	if (memcg->id.id > 0) {
+ 		trace_android_vh_mem_cgroup_id_remove(memcg);
+-		spin_lock(&memcg_idr_lock);
++		spin_lock_irqsave(&memcg_idr_lock, flags);
+ 		idr_remove(&mem_cgroup_idr, memcg->id.id);
+-		spin_unlock(&memcg_idr_lock);
++		spin_unlock_irqrestore(&memcg_idr_lock, flags);
+ 
+ 		memcg->id.id = 0;
+ 	}
+@@ -5617,6 +5620,7 @@
+ 	int node;
+ 	int __maybe_unused i;
+ 	long error = -ENOMEM;
++	unsigned long flags;
+ 
+ 	memcg = kmem_cache_zalloc(memcg_cachep, GFP_KERNEL);
+ 	if (!memcg)
+@@ -5677,9 +5681,9 @@
+ 	memcg->deferred_split_queue.split_queue_len = 0;
+ #endif /* !(defined(CONFIG_CONT_PTE_HUGEPAGE) && CONFIG_CONT_PTE_HUGEPAGE_LRU) */
+ #endif
+-	spin_lock(&memcg_idr_lock);
++	spin_lock_irqsave(&memcg_idr_lock, flags);
+ 	idr_replace(&mem_cgroup_idr, memcg, memcg->id.id);
+-	spin_unlock(&memcg_idr_lock);
++	spin_unlock_irqrestore(&memcg_idr_lock, flags);
+ 	lru_gen_init_memcg(memcg);
+ 	trace_android_vh_mem_cgroup_alloc(memcg);
+ 	return memcg;
+--- a/mm/shmem.c
++++ b/mm/shmem.c
+@@ -939,35 +939,47 @@
+ 	}
+ }
+ 
+-static struct folio *shmem_get_partial_folio(struct inode *inode, pgoff_t index)
++static int shmem_get_partial_folio(struct inode *inode, pgoff_t index,
++				   struct folio **foliop)
+ {
+ 	struct folio *folio;
++	bool memcomp_entry;
++	int error;
+ 
+ 	/*
+ 	 * At first avoid shmem_get_folio(,,,SGP_READ): that fails
+ 	 * beyond i_size, and reports fallocated pages as holes.
+ 	 */
++	*foliop = NULL;
+ 	folio = __filemap_get_folio(inode->i_mapping, index,
+ 					FGP_ENTRY | FGP_LOCK, 0);
+-	if (!xa_is_value(folio))
+-		return folio;
++	if (!xa_is_value(folio)) {
++		*foliop = folio;
++		return 0;
++	}
+ 	/*
+ 	 * But read a page back from swap if any of it is within i_size
+ 	 * (although in some cases this is just a waste of time).
+ 	 */
++	if (index >= DIV_ROUND_UP_ULL(i_size_read(inode), PAGE_SIZE))
++		return 0;
++	memcomp_entry = is_memcomp_entry(radix_to_swp_entry(folio));
+ 	folio = NULL;
+-	shmem_get_folio_gfp(inode, index, &folio, SGP_READ,
+-			   mapping_gfp_mask(inode->i_mapping), NULL, NULL, NULL,
+-			   true);
+-	return folio;
++	error = shmem_get_folio_gfp(inode, index, &folio, SGP_READ,
++				   mapping_gfp_mask(inode->i_mapping),
++				   NULL, NULL, NULL, true);
++	if (error && memcomp_entry)
++		return error;
++	*foliop = folio;
++	return 0;
+ }
+ 
+ /*
+  * Remove range of pages and swap entries from page cache, and free them.
+  * If !unfalloc, truncate or punch hole; if unfalloc, undo failed fallocate.
+  */
+-static void shmem_undo_range(struct inode *inode, loff_t lstart, loff_t lend,
+-								 bool unfalloc)
++static int shmem_undo_range(struct inode *inode, loff_t lstart, loff_t lend,
++			    bool unfalloc, bool report_error)
+ {
+ 	struct address_space *mapping = inode->i_mapping;
+ 	struct shmem_inode_info *info = SHMEM_I(inode);
+@@ -980,6 +992,7 @@
+ 	long nr_swaps_freed = 0;
+ 	pgoff_t index;
+ 	int i;
++	int error = 0, ret;
+ 
+ 	if (lend == -1)
+ 		end = -1;	/* unsigned, so actually very big */
+@@ -1025,7 +1038,9 @@
+ 		goto whole_folios;
+ 
+ 	same_folio = (lstart >> PAGE_SHIFT) == (lend >> PAGE_SHIFT);
+-	folio = shmem_get_partial_folio(inode, lstart >> PAGE_SHIFT);
++	ret = shmem_get_partial_folio(inode, lstart >> PAGE_SHIFT, &folio);
++	if (report_error)
++		error = ret;
+ 	if (folio) {
+ 		same_folio = lend < folio_pos(folio) + folio_size(folio);
+ 		folio_mark_dirty(folio);
+@@ -1039,8 +1054,12 @@
+ 		folio = NULL;
+ 	}
+ 
+-	if (!same_folio)
+-		folio = shmem_get_partial_folio(inode, lend >> PAGE_SHIFT);
++	if (!same_folio && lend != -1) {
++		ret = shmem_get_partial_folio(inode, lend >> PAGE_SHIFT,
++					      &folio);
++		if (report_error && !error)
++			error = ret;
++	}
+ 	if (folio) {
+ 		folio_mark_dirty(folio);
+ 		if (!truncate_inode_partial_folio(folio, lstart, lend))
+@@ -1122,11 +1141,12 @@
+ 	info->swapped -= nr_swaps_freed;
+ 	shmem_recalc_inode(inode);
+ 	spin_unlock_irq(&info->lock);
++	return error;
+ }
+ 
+ void shmem_truncate_range(struct inode *inode, loff_t lstart, loff_t lend)
+ {
+-	shmem_undo_range(inode, lstart, lend, false);
++	shmem_undo_range(inode, lstart, lend, false, false);
+ 	inode->i_ctime = inode->i_mtime = current_time(inode);
+ 	inode_inc_iversion(inode);
+ }
+@@ -1183,6 +1203,7 @@
+ 	if (S_ISREG(inode->i_mode) && (attr->ia_valid & ATTR_SIZE)) {
+ 		loff_t oldsize = inode->i_size;
+ 		loff_t newsize = attr->ia_size;
++		struct folio *boundary = NULL;
+ 
+ 		/* protected by i_rwsem */
+ 		if ((newsize < oldsize && (info->seals & F_SEAL_SHRINK)) ||
+@@ -1190,10 +1211,26 @@
+ 			return -EPERM;
+ 
+ 		if (newsize != oldsize) {
++			if (newsize < oldsize && offset_in_page(newsize)) {
++				error = shmem_get_partial_folio(inode,
++						newsize >> PAGE_SHIFT, &boundary);
++				if (error)
++					return error;
++				if (boundary && folio_test_large(boundary)) {
++					folio_unlock(boundary);
++					folio_put(boundary);
++					boundary = NULL;
++				} else if (boundary) {
++					folio_unlock(boundary);
++				}
++			}
+ 			error = shmem_reacct_size(SHMEM_I(inode)->flags,
+ 					oldsize, newsize);
+-			if (error)
++			if (error) {
++				if (boundary)
++					folio_put(boundary);
+ 				return error;
++			}
+ 			i_size_write(inode, newsize);
+ 			update_mtime = true;
+ 		} else {
+@@ -1205,8 +1242,14 @@
+ 				unmap_mapping_range(inode->i_mapping,
+ 							holebegin, 0, 1);
+ 			if (info->alloced)
+-				shmem_truncate_range(inode,
+-							newsize, (loff_t)-1);
++				shmem_truncate_range(inode, newsize, (loff_t)-1);
++			/*
++			 * The preflight reference keeps the boundary folio in the
++			 * page cache through truncate, so shmem_get_partial_folio()
++			 * cannot turn it back into an unreadable memcomp entry.
++			 */
++			if (boundary)
++				folio_put(boundary);
+ 			/* unmap again to remove racily COWed private pages */
+ 			if (oldsize > holebegin)
+ 				unmap_mapping_range(inode->i_mapping,
+@@ -2997,7 +3040,10 @@
+ 		if ((u64)unmap_end > (u64)unmap_start)
+ 			unmap_mapping_range(mapping, unmap_start,
+ 					    1 + unmap_end - unmap_start, 0);
+-		shmem_truncate_range(inode, offset, offset + len - 1);
++		error = shmem_undo_range(inode, offset, offset + len - 1,
++					 false, true);
++		inode->i_ctime = inode->i_mtime = current_time(inode);
++		inode_inc_iversion(inode);
+ 		/* No need to unmap again: hole-punching leaves COWed pages */
+ 
+ 		spin_lock(&inode->i_lock);
+@@ -3005,7 +3051,6 @@
+ 		wake_up_all(&shmem_falloc_waitq);
+ 		WARN_ON_ONCE(!list_empty(&shmem_falloc_waitq.head));
+ 		spin_unlock(&inode->i_lock);
+-		error = 0;
+ 		goto out;
+ 	}
+ 
+@@ -3065,7 +3110,8 @@
+ 			if (index > start) {
+ 				shmem_undo_range(inode,
+ 				    (loff_t)start << PAGE_SHIFT,
+-				    ((loff_t)index << PAGE_SHIFT) - 1, true);
++				    ((loff_t)index << PAGE_SHIFT) - 1, true,
++				    false);
+ 			}
+ 			goto undone;
+ 		}

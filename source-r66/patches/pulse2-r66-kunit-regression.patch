@@ -1,0 +1,87 @@
+--- a/mm/memcomp/tests/shmem_retry_test.h
++++ b/mm/memcomp/tests/shmem_retry_test.h
+@@ -446,5 +446,73 @@
+ {
+ 	mc16_sr_partial_range(test, true, false);
+ }
++
++/*
++ * A partial punch can only return success after the boundary folio has been
++ * read.  If that read is unavailable, leave the shadow untouched and report
++ * the error instead of treating the page as a hole.
++ */
++static void mc16_sr_partial_read_error(struct kunit *test, bool shrink)
++{
++	struct mc16_sr_test *f = mc16_sr_begin(test);
++	struct inode *inode;
++	void *entry;
++	unsigned long token;
++	loff_t start = PAGE_SIZE / 2;
++	loff_t end = PAGE_SIZE;
++	int ret;
++
++	KUNIT_ASSERT_NOT_NULL(test, f);
++	inode = file_inode(f->file);
++	mc16_sr_current = f;
++	kunit_activate_static_stub(test, mc16_store_eviction, mc16_sr_eviction);
++	KUNIT_ASSERT_EQ(test, mc16_sr_pageout(f, 0), 0);
++	entry = xa_load(&inode->i_mapping->i_pages, 0);
++	KUNIT_ASSERT_TRUE(test, xa_is_value(entry));
++	KUNIT_ASSERT_TRUE(test, is_memcomp_entry(radix_to_swp_entry(entry)));
++	token = swp_offset(radix_to_swp_entry(entry));
++	KUNIT_ASSERT_NE(test, token, 0UL);
++	KUNIT_ASSERT_TRUE(test, mc16_get(token, &f->cache->guard));
++	KUNIT_ASSERT_EQ(test, mc16_sr_shadow(&f->cache->guard),
++			MC16_SHADOW_PUBLISHING);
++	mc16_store_publish(&f->cache->guard, 1, f->shadow);
++
++	f->read_error = -ENOMEM;
++	kunit_activate_static_stub(test, mc16_load_page, mc16_sr_read);
++	if (shrink)
++		ret = do_truncate(&init_user_ns, f->file->f_path.dentry, start,
++				  0, NULL);
++	else
++		ret = vfs_fallocate(f->file,
++				    FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE,
++				    start, end - start);
++	kunit_deactivate_static_stub(test, mc16_load_page);
++
++	KUNIT_EXPECT_EQ(test, ret, -ENOMEM);
++	KUNIT_EXPECT_EQ(test, f->reads, 1U);
++	KUNIT_EXPECT_EQ(test, i_size_read(inode), end);
++	KUNIT_EXPECT_PTR_EQ(test, xa_load(&inode->i_mapping->i_pages, 0), entry);
++	if (shrink) {
++		KUNIT_ASSERT_EQ(test, do_truncate(&init_user_ns,
++					f->file->f_path.dentry, start, 0, NULL), 0);
++		KUNIT_ASSERT_EQ(test, do_truncate(&init_user_ns,
++					f->file->f_path.dentry, end, 0, NULL), 0);
++	} else {
++		KUNIT_ASSERT_EQ(test, vfs_fallocate(f->file,
++					FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE,
++					start, end - start), 0);
++	}
++	KUNIT_EXPECT_TRUE(test, mc16_sr_check_range(inode, 0, start, end));
++}
++
++static void memcomp_test_shmem_partial_punch_read_error(struct kunit *test)
++{
++	mc16_sr_partial_read_error(test, false);
++}
++
++static void memcomp_test_shmem_partial_truncate_read_error(struct kunit *test)
++{
++	mc16_sr_partial_read_error(test, true);
++}
+ #endif /* CONFIG_SHMEM */
+ #endif /* _MM_MEMCOMP_TESTS_SHMEM_RETRY_TEST_H */
+--- a/mm/memcomp/tests/suite.h
++++ b/mm/memcomp/tests/suite.h
+@@ -104,6 +104,8 @@
+ 	KUNIT_CASE(memcomp_test_shmem_partial_punch),
+ 	KUNIT_CASE(memcomp_test_shmem_cross_page_punch),
+ 	KUNIT_CASE(memcomp_test_shmem_partial_truncate),
++	KUNIT_CASE(memcomp_test_shmem_partial_punch_read_error),
++	KUNIT_CASE(memcomp_test_shmem_partial_truncate_read_error),
+ 	KUNIT_CASE(memcomp_test_cache_xarray_race_no_restore),
+ #ifdef MC16_SHMEM_ZERO_FAULT_TEST_ENABLED
+ 	KUNIT_CASE(memcomp_test_shmem_token0_not_major),
