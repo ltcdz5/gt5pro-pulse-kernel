@@ -1,0 +1,93 @@
+--- a/crypto/zstd.c
++++ b/crypto/zstd.c
+@@ -18,27 +18,46 @@
+ static uint __read_mostly compression_level = 1;
+ module_param(compression_level, uint, 0644);
+ 
++/*
++ * A negative Zstd level only raises the match search acceleration; it does not
++ * change the frame format.  Zstd spends much of a single-page frame on fixed
++ * per-frame work, so trading search effort for speed costs little ratio here
++ * while cutting the time a faulting task or kswapd spends compressing.
++ */
++static int __read_mostly fast_level = -1;
++module_param(fast_level, int, 0444);
++
+ struct zstd_ctx {
+ 	zstd_cctx *cctx;
+ 	zstd_dctx *dctx;
+ 	void *cwksp;
+ 	void *dwksp;
++	zstd_parameters params;
++	unsigned int level;
+ };
+ 
+-static zstd_parameters zstd_params(void)
++static void zstd_update_params(struct zstd_ctx *ctx, unsigned int level)
+ {
+-	if (compression_level == 0)
+-		compression_level = 1;
+-	if (compression_level > zstd_max_clevel())
+-		compression_level = zstd_max_clevel();
+-	return zstd_get_params(compression_level, PAGE_SIZE);
++	unsigned int normalized = clamp_t(unsigned int, level, 1, zstd_max_clevel());
++
++	if (level != normalized)
++		cmpxchg(&compression_level, level, normalized);
++	if (fast_level < 0 && normalized == 1)
++		ctx->params = zstd_get_params(
++			clamp_t(int, fast_level, zstd_min_clevel(), -1),
++			PAGE_SIZE);
++	else
++		ctx->params = zstd_get_params(normalized, PAGE_SIZE);
++	ctx->level = normalized;
+ }
+ 
+ static int zstd_comp_init(struct zstd_ctx *ctx)
+ {
+ 	int ret = 0;
+-	const zstd_parameters params = zstd_params();
+-	const size_t wksp_size = zstd_cctx_workspace_bound(&params.cParams);
++	size_t wksp_size;
++
++	zstd_update_params(ctx, READ_ONCE(compression_level));
++	wksp_size = zstd_cctx_workspace_bound(&ctx->params.cParams);
+ 
+ 	ctx->cwksp = vzalloc(wksp_size);
+ 	if (!ctx->cwksp) {
+@@ -157,9 +176,12 @@
+ {
+ 	size_t out_len;
+ 	struct zstd_ctx *zctx = ctx;
+-	const zstd_parameters params = zstd_params();
++	unsigned int level = READ_ONCE(compression_level);
+ 
+-	out_len = zstd_compress_cctx(zctx->cctx, dst, *dlen, src, slen, &params);
++	if (unlikely(level != zctx->level))
++		zstd_update_params(zctx, level);
++	out_len = zstd_compress_cctx(zctx->cctx, dst, *dlen, src, slen,
++				     &zctx->params);
+ 	if (zstd_is_error(out_len))
+ 		return -EINVAL;
+ 	*dlen = out_len;
+--- a/mm/memcomp.c
++++ b/mm/memcomp.c
+@@ -5231,7 +5231,8 @@
+ 
+ 	atomic_inc(&async->pending);
+ 	async->queued_at = ktime_get();
+-	if (queue_work(memcomp_async_pool.software_wq, &async->work)) {
++	if (queue_work_on(raw_smp_processor_id(),
++			   memcomp_async_pool.software_wq, &async->work)) {
+ 		atomic64_inc(&memcomp_async_batches);
+ 		atomic64_add(async->compressible_pages,
+ 			     &memcomp_async_compressible_pages);
+@@ -5376,7 +5377,7 @@
+ 		 */
+ 		max_active = memcomp_comp_budget_limit(num_online_cpus(), nr);
+ 		software_wq = alloc_workqueue("memcomp-zstd",
+-					      WQ_UNBOUND | WQ_MEM_RECLAIM,
++					      WQ_MEM_RECLAIM,
+ 					      max_active);
+ 		if (!software_wq)
+ 			return;
