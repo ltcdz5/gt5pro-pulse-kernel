@@ -4,8 +4,8 @@
 
 English: **memcomp 6.1 kernel port (Linux 6.1.157) with in-RAM memory compression for Realme GT5 Pro (RMX3888 / SM8650 / ColorOS 17).**
 
-当前发布 **Pulse2 · build `#66` 维护测试版**，配套 **Pulse MemGuard v1.4.2**。
-[下载预发布与验证附件](https://github.com/ltcdz5/gt5pro-pulse-kernel/releases/tag/pulse2-r66)
+当前发布 **Pulse2 · build `#68` 离线优化测试版**，配套 **Pulse MemGuard v1.4.2**。
+[下载预发布与验证附件](https://github.com/ltcdz5/gt5pro-pulse-kernel/releases/tag/pulse2-r68)
 
 ---
 
@@ -18,29 +18,27 @@ English: **memcomp 6.1 kernel port (Linux 6.1.157) with in-RAM memory compressio
 
 ---
 
-## #66 改了什么
+## #68 改了什么
 
-维护版修复 memcg IDR 锁的中断安全问题，以及 tmpfs 部分打洞或截短时边界页回读失败的处理。沿用 #66 首版的 Zstd 档位、异步 worker 策略和构建配置。
+#68 以 #66 正确性维护版为基线，只改 8 个文件，做两项 reserve 优化并修复一个构建配置缺陷。**这是离线优化候选，尚未刷入真机。**
 
-#66 首版相对 `#52` 有两项性能改动。
+1. reserve 私有路径同时携带 `struct mem_cgroup *`，record 销毁时直接 put，去掉每页一次 RCU + IDR 反查。
+2. record 改用 1/2/4/8/16 页五档专用 `kmem_cache`，去掉每页 `ksize()` 查询。
+3. 把异步统计变量移出 `CONFIG_MEMCOMP_DEBUG_STATS` 条件块，关闭调试统计可以正常编译。
 
-1. `crypto/zstd.c`：Zstd 默认压缩档从 1 改为 `-1`（负档），单页压缩更快。
-2. `mm/memcomp.c`：软件异步 worker 去掉 `WQ_UNBOUND`，改用 `queue_work_on(raw_smp_processor_id(), ...)` 绑定到发起压缩的 CPU。
+W1 三槽交叉（LZ4 同步，C/O 各三次冷启动，ARM64 QEMU TCG）：
 
-ARM64 QEMU，760 MiB 混合匿名页，四轮中位数：
+| 模式 | #66 CPU | #68 CPU | 变化 | #66 wall | #68 wall | 变化 |
+|---|---:|---:|---:|---:|---:|---:|
+| seq | 87.15 µs/页 | 84.84 µs/页 | **-2.66%** | 88.94 µs/页 | 86.45 µs/页 | **-2.79%** |
+| rand | 71.61 µs/页 | 69.84 µs/页 | **-2.48%** | 72.99 µs/页 | 71.22 µs/页 | **-2.42%** |
+| rewrite | 84.81 µs/页 | 84.51 µs/页 | -0.35% | 86.52 µs/页 | 86.11 µs/页 | -0.47% |
 
-| 指标 | #65（负档，不绑核） | #66（负档 + 本核执行） | 全同步参考 |
-|---|---:|---:|---:|
-| 填充 | 7.629 s | 7.635 s | 7.608 s |
-| 客体 CPU | 14.525 s | 13.670 s | 13.520 s |
-| p99 探针 | 1.127 ms | 0.846 ms | 0.804 ms |
-| 后台压缩页 | 35,540 | 32,098 | 28,465 |
-| 后台吞吐 | 4,659 页/s | 4,204 页/s | 3,742 页/s |
-| 压缩率 | 2.216 | 2.216 | 2.215 |
+回读 P99/P99.9 无一致退化；KUnit 131 项中 126 通过、5 跳过、0 失败；`vmlinux.symvers` 与 `.config` 都和 #66 逐字节相同。
 
-同核争用（两个线程占满两个 CPU）和 CPU 热插拔（每 150 ms 切一次 CPU，21–22 轮）两版全部 PASS、回读一致、`async_queue_fail=0`。#66 的 kswapd 等批时间从 #65 的 22.7 ms 降到 0，代价是 kswapd 覆盖页数减少约 10%，更多页由分配线程直接压缩。
+### #66 基线
 
-#66 首版在 `_a` 槽刷入并重启成功，Zstd、后台异步、Wi‑Fi 和移动网络接口均已验证，蓝牙驱动已加载。维护版真机验收待完成。
+#66 维护版修复 memcg IDR 锁的中断安全问题，以及 tmpfs 部分打洞或截短时边界页回读失败的处理。首版相对 #52 把 Zstd 默认档从 1 改为 `-1`，并把软件异步 worker 从 `WQ_UNBOUND` 改为绑定发起压缩的 CPU。真机 `_a` 槽已验收，Wi‑Fi、移动数据、蓝牙驱动和 Zstd 后台异步均正常。
 
 ---
 
@@ -81,24 +79,24 @@ ARM64 QEMU，760 MiB 混合匿名页，四轮中位数：
 
 ### AK3（推荐）
 
-在支持 AnyKernel3 的刷机工具里选 `Pulse2-AK3-RMX3888-17.0.0.120-66.zip`。
+在支持 AnyKernel3 的刷机工具里选 `Pulse2-AK3-RMX3888-17.0.0.120-68.zip`。
 
 - 读 `ro.boot.slot_suffix`，默认刷当前槽；
 - 检测到 OTA 已安排下次从另一槽启动时，改刷目标槽；
 - 按目标槽完整 boot 的 SHA-256 校验白名单（`.120` 原厂、Pulse1、白名单内的 Pulse2）；
-- 支持 #66 首版升级至维护版，重复安装维护版时直接退出；
+- 支持白名单内的历史 Pulse2 版本升级到 #68，重复安装 #68 时直接退出；
 - 只写 `boot_a` / `boot_b`，写完回读校验。
 
 ### 手动 dd
 
 ```sh
 slot=$(adb shell getprop ro.boot.slot_suffix | tr -d '\r')
-adb push boot-pulse2-r66-full.img /data/local/tmp/
-adb shell su -c "dd if=/data/local/tmp/boot-pulse2-r66-full.img of=/dev/block/by-name/boot$slot bs=4M conv=fsync"
+adb push boot-pulse2-r68-full.img /data/local/tmp/
+adb shell su -c "dd if=/data/local/tmp/boot-pulse2-r68-full.img of=/dev/block/by-name/boot$slot bs=4M conv=fsync"
 adb shell su -c "sha256sum /dev/block/by-name/boot$slot"
 ```
 
-回读 SHA-256 应为 `10dbf2f66f171c52b528c6a11ac74352b61b5f9b3503cc1bcf794b16231e32db` 再重启。
+回读 SHA-256 应为 `0c246876ff40cf2a3c9f95e0918366c6afe5d24d17cb232c3e211eddb4f2637b` 再重启。
 
 本机 bootloader 拒绝 `fastboot flash boot_*`（报 `Requested download size is more than max allowed`），`fastboot boot` 可用。仓库只提供 AK3 与 `dd` 两种刷入方式；回退时把备份写回同一个分区。
 
@@ -108,22 +106,18 @@ adb shell su -c "sha256sum /dev/block/by-name/boot$slot"
 
 ---
 
-## 验证记录 · #66
-
-维护版构建时间为 `2026-11-27 19:32:12 CST`。普通 KUnit、KASAN、KCSAN 和 Lockdep 四套各 125 项 memcomp 通过、5 项跳过、0 失败。ARM64 QEMU 的 64 页可执行匿名页压出回读及四轮 760 MiB 压出、回读、释放测试均通过。配置、符号表与首版逐字节相同，双 OEM 公钥已核对。
-
-以下为 #66 首版记录。
+## 验证记录 · #68
 
 | 项 | 结果 |
 |---|---|
-| 真机刷写 | `dd` 写 `_a`，回读 SHA-256 `a027d3bf…` 与镜像一致 |
-| 真机启动 | 真重启 `boot_completed=1`；`uname -v` = `#66 SMP PREEMPT Fri Nov 27 15:02:22 CST 2026` |
-| 网络 | `lsmod` 629；`wlan0`、`rmnet_data0` UP；modem `ONLINE`；`ping 223.5.5.5` 0% 丢包；`rfkill` / `cfg80211` / `mac80211` / `btpower` 已加载 |
-| 离线回读 | ARM64 QEMU 四轮 760 MiB 完整回读通过 |
-| 离线争用 | 同核争用、CPU 热插拔各四轮通过；`async_fail` / `async_queue_fail` / `compress_fail` / `zs_fail` / `oom_kill` 增量 0 |
-| 符号 | `vmlinux.symvers` 与 `#52` 逐字节相同（md5 `d56f8407…`）；`mc_accept` `gate_crc=0`、`true_missing=28`（既有） |
-| 证书 | 两张 OEM 公钥都在 `Image` 内 |
-| 未覆盖 | 60 应用保活、深睡、拔线能效、蓝牙配对、独立移动数据流量 |
+| 构建 | `#68 SMP PREEMPT Sat Nov 28 18:10:00 CST 2026`；`uname -r` 保持 `6.1.157-android14-11-o-gdb34703cc893` |
+| W1 三槽 | LZ4 同步，C/O 各三次冷启动；seq CPU -2.66%，rand CPU -2.48%，rewrite CPU -0.35%；回读 P99/P99.9 无一致退化 |
+| KUnit | x86_64 + KVM，131 项：126 通过、5 跳过、0 失败 |
+| 符号 | `vmlinux.symvers` 与 #66 逐字节相同（SHA-256 `d5d991e9…`）；三套厂商模块闸门 CRC mismatch 0 |
+| 证书 | 两张 OEM 公钥都在 `cert_list` 与 `Image` 内 |
+| 未覆盖 | **未刷真机**；无 WiFi / 蓝牙 / 移动数据 / 保活 / 深睡 / 功耗实测；无 W2/W3 压力复测 |
+
+历史 #66 真机记录：`_a` 槽 `dd` 写入并真重启 `boot_completed=1`；`wlan0`、`rmnet_data0` UP，modem `ONLINE`，`ping 223.5.5.5` 0% 丢包；`lsmod` 629；Zstd 后台异步正常。
 
 历史版本（`#29`–`#52`）的完整验证记录保留在各自的发布标签和仓库 `RELEASE-*.md` 中。
 
@@ -150,6 +144,7 @@ adb shell su -c "sha256sum /dev/block/by-name/boot$slot"
 | `#51` | 取消运行时算法切换，改为重启生效 |
 | `#52` | Zstd 1.6.0 |
 | `#66` | Zstd 默认负档 + 软件 worker 绑定扫描 CPU |
+| `#68` | reserve 携带 memcg 指针 + record 专用 kmem_cache；修复 `DEBUG_STATS=n` 编译；离线 W1 约 -2.5% CPU |
 
 ---
 

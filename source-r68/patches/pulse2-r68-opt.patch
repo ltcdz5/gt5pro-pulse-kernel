@@ -1,0 +1,389 @@
+diff -ruN a/include/linux/memcontrol.h b/include/linux/memcontrol.h
+--- a/include/linux/memcontrol.h	2026-11-28 18:27:00.783981806 +0800
++++ b/include/linux/memcontrol.h	2026-11-28 18:27:00.787907108 +0800
+@@ -1237,10 +1237,15 @@
+  * ID 0 means disabled or already retired identity and needs no put.
+  */
+ int mem_cgroup_memcomp_id_get_checked(struct folio *folio, unsigned short *id);
++int mem_cgroup_memcomp_id_get_checked_memcg(struct folio *folio,
++					     unsigned short *id,
++					     struct mem_cgroup **memcg);
+ unsigned short mem_cgroup_memcomp_id_get(struct folio *folio);
+ /* Duplicate a nonzero, caller-pinned ID for an independently owned key. */
+ bool mem_cgroup_memcomp_id_get_ref(unsigned short id);
+ void mem_cgroup_memcomp_id_put(unsigned short id);
++/* Put a reference returned by mem_cgroup_memcomp_id_get_checked_memcg(). */
++void mem_cgroup_memcomp_id_put_memcg(struct mem_cgroup *memcg);
+ int mem_cgroup_memcomp_charge(struct folio *folio, struct mm_struct *mm,
+ 			      gfp_t gfp, unsigned short id);
+ #endif
+@@ -1254,6 +1259,14 @@
+ 	return 0;
+ }
+ 
++static inline int mem_cgroup_memcomp_id_get_checked_memcg(
++	struct folio *folio, unsigned short *id, struct mem_cgroup **memcg)
++{
++	*id = 0;
++	*memcg = NULL;
++	return 0;
++}
++
+ static inline unsigned short mem_cgroup_memcomp_id_get(struct folio *folio)
+ {
+ 	return 0;
+@@ -1268,6 +1281,10 @@
+ {
+ }
+ 
++static inline void mem_cgroup_memcomp_id_put_memcg(struct mem_cgroup *memcg)
++{
++}
++
+ static inline int mem_cgroup_memcomp_charge(struct folio *folio,
+ 					    struct mm_struct *mm,
+ 					    gfp_t gfp, unsigned short id)
+diff -ruN a/mm/memcomp/cache_store.h b/mm/memcomp/cache_store.h
+--- a/mm/memcomp/cache_store.h	2026-11-28 18:27:00.821235264 +0800
++++ b/mm/memcomp/cache_store.h	2026-11-28 18:27:00.822450056 +0800
+@@ -24,6 +24,7 @@
+ {
+ 	struct mc16_initial_payload payload = { };
+ 	struct obj_cgroup *objcg;
++	struct mem_cgroup *owner_memcg;
+ 	unsigned long handle = 0;
+ 	unsigned int bytes = 0;
+ 	unsigned short owner_id;
+@@ -37,7 +38,7 @@
+ 		return -EINVAL;
+ 	if (!memcomp_is_enabled())
+ 		return -EOPNOTSUPP;
+-	ret = mc16_source_id_get(account, &owner_id);
++	ret = mc16_source_id_get(account, &owner_id, &owner_memcg);
+ 	if (ret)
+ 		return ret;
+ 	/* Independent source owner, never a borrowed registry key across X1/X2. */
+@@ -78,7 +79,7 @@
+ out_owner:
+ 	if (objcg)
+ 		memcomp_objcg_put(objcg);
+-	mem_cgroup_memcomp_id_put(owner_id);
++	mc16_source_id_put(owner_memcg);
+ 	return ret;
+ }
+ 
+diff -ruN a/mm/memcomp/lifetime.h b/mm/memcomp/lifetime.h
+--- a/mm/memcomp/lifetime.h	2026-11-28 18:27:00.809964167 +0800
++++ b/mm/memcomp/lifetime.h	2026-11-28 18:27:00.811401153 +0800
+@@ -8,6 +8,8 @@
+ #include <linux/overflow.h>
+ #include <linux/slab.h>
+ 
++static struct kmem_cache *mc16_record_caches[MC16_MAX_ORDER + 1];
++
+ static inline void mc16_record_destroy(struct mc16_record *record)
+ {
+ 	struct obj_cgroup *objcg = record->objcg;
+@@ -17,7 +19,7 @@
+ 	memcomp_objcg_uncharge(objcg, charge);
+ 	if (objcg)
+ 		memcomp_objcg_put(objcg);
+-	kfree(record);
++	kmem_cache_free(mc16_record_caches[ilog2(record->nr_pages)], record);
+ }
+ 
+ static inline void mc16_record_member_put(struct mc16_record *record)
+@@ -42,6 +44,7 @@
+ {
+ 	struct mc16_record *record;
+ 	struct obj_cgroup *objcg;
++	struct kmem_cache *cache;
+ 	unsigned int order, i;
+ 	size_t bytes;
+ 	int ret;
+@@ -49,20 +52,24 @@
+ 	if (!folio || !nr_pages || nr_pages > MEMCOMP_MAX_COMPRESS_PAGES ||
+ 	    !is_power_of_2(nr_pages))
+ 		return ERR_PTR(-EINVAL);
++	order = ilog2(nr_pages);
++	cache = mc16_record_caches[order];
++	if (WARN_ON_ONCE(!cache))
++		return ERR_PTR(-ENOMEM);
+ 	bytes = struct_size(record, member, nr_pages);
+-	record = kzalloc(bytes, GFP_NOIO | __GFP_NOWARN);
++	record = kmem_cache_alloc(cache, GFP_NOIO | __GFP_ZERO | __GFP_NOWARN);
+ 	if (!record)
+ 		return ERR_PTR(-ENOMEM);
+ 
+-	/* Charge the actual slab size, not the flexible-array requested size. */
+-	record->alloc_bytes = ksize(record);
++	/* Charge the allocator's actual object size without a ksize() lookup. */
++	record->alloc_bytes = kmem_cache_size(cache);
+ 	objcg = memcomp_objcg_get(folio);
+ 	if (objcg) {
+ 		ret = memcomp_objcg_charge(objcg, GFP_NOWAIT | __GFP_NOWARN,
+ 					   record->alloc_bytes);
+ 		if (ret) {
+ 			memcomp_objcg_put(objcg);
+-			kfree(record);
++			kmem_cache_free(cache, record);
+ 			return ERR_PTR(ret);
+ 		}
+ 		record->charge_bytes = record->alloc_bytes;
+@@ -74,7 +81,6 @@
+ 	if (shmem)
+ 		record->record_flags |= MC16_RECORD_SHMEM;
+ 	refcount_set(&record->members, nr_pages);
+-	order = ilog2(nr_pages);
+ 	for (i = 0; i < nr_pages; i++) {
+ 		record->member[i].owner_folio = folio;
+ 		record->member[i].flags = MC16_PENDING | MC16_F_OWNER |
+diff -ruN a/mm/memcomp/storage.h b/mm/memcomp/storage.h
+--- a/mm/memcomp/storage.h	2026-11-28 18:27:00.815701961 +0800
++++ b/mm/memcomp/storage.h	2026-11-28 18:27:00.816930854 +0800
+@@ -302,12 +302,18 @@
+  * A request owns a temporary source ID reference across X1/X2. Each key takes
+  * another reference, independent of objcg reparenting and the request lifetime.
+  */
+-static inline int mc16_source_id_get(struct folio *folio, unsigned short *id)
++static inline int mc16_source_id_get(struct folio *folio, unsigned short *id,
++				     struct mem_cgroup **memcg)
+ {
+ #ifdef CONFIG_MEMCOMP_KUNIT_TEST
+-	KUNIT_STATIC_STUB_REDIRECT(mc16_source_id_get, folio, id);
++	KUNIT_STATIC_STUB_REDIRECT(mc16_source_id_get, folio, id, memcg);
+ #endif
+-	return mem_cgroup_memcomp_id_get_checked(folio, id);
++	return mem_cgroup_memcomp_id_get_checked_memcg(folio, id, memcg);
++}
++
++static inline void mc16_source_id_put(struct mem_cgroup *memcg)
++{
++	mem_cgroup_memcomp_id_put_memcg(memcg);
+ }
+ 
+ static inline bool mc16_owner_id_get_ref(unsigned short id)
+@@ -1044,6 +1050,7 @@
+ 				    struct memcomp_ref refs[])
+ {
+ 	struct mc16_reserve_request request;
++	struct mem_cgroup *owner_memcg;
+ 	unsigned short owner_id;
+ 	int ret;
+ 
+@@ -1052,7 +1059,7 @@
+ 	    record->nr_pages != nr ||
+ 	    kind != !!(record->record_flags & MC16_RECORD_SHMEM))
+ 		return -EINVAL;
+-	ret = mc16_source_id_get(record->producer, &owner_id);
++	ret = mc16_source_id_get(record->producer, &owner_id, &owner_memcg);
+ 	if (ret)
+ 		return ret;
+ 	request = (struct mc16_reserve_request) {
+@@ -1061,7 +1068,7 @@
+ 		.zero_hint = zero_hint,
+ 	};
+ 	ret = mc16_reserve_request(&request, refs);
+-	mem_cgroup_memcomp_id_put(owner_id);
++	mc16_source_id_put(owner_memcg);
+ 	return ret;
+ }
+ 
+diff -ruN a/mm/memcomp/tests/cache_store_test.h b/mm/memcomp/tests/cache_store_test.h
+--- a/mm/memcomp/tests/cache_store_test.h	2026-11-28 18:27:00.827736488 +0800
++++ b/mm/memcomp/tests/cache_store_test.h	2026-11-28 18:27:00.829203715 +0800
+@@ -134,6 +134,7 @@
+ {
+ 	struct mc16_test_cache_producer *f = mc16_test_cache_producer_begin(test);
+ 	struct mc16_initial_payload initial = { .bytes = 128 };
++	struct mem_cgroup *owner_memcg;
+ 	struct memcomp_ref guard, active;
+ 	struct mc16_test_storage *s;
+ 	struct memcomp_lru *fifo;
+@@ -162,12 +163,12 @@
+ 		KUNIT_FAIL(test, "payload charge failed: %d", ret);
+ 		return;
+ 	}
+-	ret = mc16_source_id_get(s->owner->folio, &owner_id);
++	ret = mc16_source_id_get(s->owner->folio, &owner_id, &owner_memcg);
+ 	if (!ret) {
+ 		ret = mc16_reserve_cache_id(&s->owner->model.objcg, owner_id,
+ 					    folio_nid(s->owner->folio), &initial, 1,
+ 					    &f->private);
+-		mem_cgroup_memcomp_id_put(owner_id);
++		mc16_source_id_put(owner_memcg);
+ 	}
+ 	if (ret) {
+ 		memcomp_objcg_uncharge(&s->owner->model.objcg, initial.bytes);
+diff -ruN a/mm/memcomp/tests/workingset_storage_test.h b/mm/memcomp/tests/workingset_storage_test.h
+--- a/mm/memcomp/tests/workingset_storage_test.h	2026-11-28 18:27:00.833508984 +0800
++++ b/mm/memcomp/tests/workingset_storage_test.h	2026-11-28 18:27:00.834832694 +0800
+@@ -294,9 +294,11 @@
+ 	KUNIT_EXPECT_EQ(test, atomic_long_read(&f->owner->model.charged), 0L);
+ }
+ 
+-static int mc16_ws_source_id_failure(struct folio *folio, unsigned short *id)
++static int mc16_ws_source_id_failure(struct folio *folio, unsigned short *id,
++				     struct mem_cgroup **memcg)
+ {
+ 	*id = 0;
++	*memcg = NULL;
+ 	return -EAGAIN;
+ }
+ 
+diff -ruN a/mm/memcomp.c b/mm/memcomp.c
+--- a/mm/memcomp.c	2026-11-28 18:27:00.802620478 +0800
++++ b/mm/memcomp.c	2026-11-28 18:27:00.804466167 +0800
+@@ -659,6 +659,25 @@
+ /* Level gate latch, see MEMCOMP_WRITEBACK_GATE_START_PERMILLE. */
+ static atomic_t memcomp_writeback_gate_open = ATOMIC_INIT(0);
+ 
++/* Async timing/counters back both sysfs and the debug-stat extensions. */
++static atomic64_t __maybe_unused memcomp_async_payloads = ATOMIC64_INIT(0);
++static atomic64_t __maybe_unused memcomp_async_fail = ATOMIC64_INIT(0);
++static atomic64_t __maybe_unused memcomp_async_queue_fail = ATOMIC64_INIT(0);
++static atomic64_t __maybe_unused memcomp_async_skip_pages = ATOMIC64_INIT(0);
++static atomic64_t __maybe_unused memcomp_async_batches = ATOMIC64_INIT(0);
++static atomic64_t __maybe_unused memcomp_async_compressible_pages = ATOMIC64_INIT(0);
++static atomic64_t __maybe_unused memcomp_async_pool_empty = ATOMIC64_INIT(0);
++static atomic64_t __maybe_unused memcomp_async_store_fail_pages = ATOMIC64_INIT(0);
++static atomic64_t __maybe_unused memcomp_async_early_complete = ATOMIC64_INIT(0);
++static atomic_t memcomp_async_active = ATOMIC_INIT(0);
++static atomic64_t memcomp_async_active_peak = ATOMIC64_INIT(0);
++static atomic64_t memcomp_async_queue_ns = ATOMIC64_INIT(0);
++static atomic64_t memcomp_async_queue_max_ns = ATOMIC64_INIT(0);
++static atomic64_t memcomp_async_work_ns = ATOMIC64_INIT(0);
++static atomic64_t memcomp_async_work_max_ns = ATOMIC64_INIT(0);
++static atomic64_t memcomp_async_wait_ns = ATOMIC64_INIT(0);
++static atomic64_t memcomp_async_wait_max_ns = ATOMIC64_INIT(0);
++
+ #ifdef CONFIG_MEMCOMP_DEBUG_STATS
+ /* Keep debug-only selection diagnostics off a globally contended cacheline. */
+ enum memcomp_placement_stat {
+@@ -723,24 +742,7 @@
+ static atomic64_t memcomp_raw_reject_ge_page = ATOMIC64_INIT(0);
+ static atomic64_t memcomp_raw_reject_zs_fallback = ATOMIC64_INIT(0);
+ static atomic64_t memcomp_raw_reject_net = ATOMIC64_INIT(0);
+-static atomic64_t memcomp_async_payloads = ATOMIC64_INIT(0);
+-static atomic64_t memcomp_async_fail = ATOMIC64_INIT(0);
+-static atomic64_t memcomp_async_queue_fail = ATOMIC64_INIT(0);
+-static atomic64_t memcomp_async_skip_pages = ATOMIC64_INIT(0);
+ static atomic64_t memcomp_cache_publish_timeout = ATOMIC64_INIT(0);
+-static atomic64_t memcomp_async_batches = ATOMIC64_INIT(0);
+-static atomic64_t memcomp_async_compressible_pages = ATOMIC64_INIT(0);
+-static atomic64_t memcomp_async_pool_empty = ATOMIC64_INIT(0);
+-static atomic64_t memcomp_async_store_fail_pages = ATOMIC64_INIT(0);
+-static atomic64_t memcomp_async_early_complete = ATOMIC64_INIT(0);
+-static atomic_t memcomp_async_active = ATOMIC_INIT(0);
+-static atomic64_t memcomp_async_active_peak = ATOMIC64_INIT(0);
+-static atomic64_t memcomp_async_queue_ns = ATOMIC64_INIT(0);
+-static atomic64_t memcomp_async_queue_max_ns = ATOMIC64_INIT(0);
+-static atomic64_t memcomp_async_work_ns = ATOMIC64_INIT(0);
+-static atomic64_t memcomp_async_work_max_ns = ATOMIC64_INIT(0);
+-static atomic64_t memcomp_async_wait_ns = ATOMIC64_INIT(0);
+-static atomic64_t memcomp_async_wait_max_ns = ATOMIC64_INIT(0);
+ static atomic64_t memcomp_reserve_entry_alloc_fail = ATOMIC64_INIT(0);
+ static atomic64_t memcomp_refresh_state_fail = ATOMIC64_INIT(0);
+ static atomic64_t memcomp_refresh_payload_fail = ATOMIC64_INIT(0);
+@@ -5786,11 +5788,27 @@
+ 
+ static int __init memcomp_init(void)
+ {
++	char name[24];
++	unsigned int order;
+ 	int ret;
+ 
+ 	BUILD_BUG_ON(MAX_NUMNODES > U16_MAX);
+ 	BUILD_BUG_ON(MEMCOMP_MAX_COMP_CTXS > BITS_PER_LONG);
+ 
++	for (order = 0; order <= MC16_MAX_ORDER; order++) {
++		unsigned int nr_pages = 1U << order;
++		size_t bytes = sizeof(struct mc16_record) +
++			nr_pages * sizeof(struct mc16_member);
++
++		snprintf(name, sizeof(name), "memcomp-record-%u", nr_pages);
++		mc16_record_caches[order] =
++			kmem_cache_create(name, bytes, 0, 0, NULL);
++		if (!mc16_record_caches[order]) {
++			ret = -ENOMEM;
++			goto err_caches;
++		}
++	}
++
+ 	/* Listen first, so a registration racing the check is not missed. */
+ 	memcomp_select.deadline = jiffies + MEMCOMP_COMPRESSOR_WAIT;
+ 	if (IS_ENABLED(CONFIG_SYSFS) && memcomp_codec_wait && !memcomp_force_off) {
+@@ -5803,6 +5821,11 @@
+ 	/* A compressor that is already there is set up before this returns. */
+ 	memcomp_select_worker(&memcomp_select.work.work);
+ 	return 0;
++
++err_caches:
++	while (order--)
++		kmem_cache_destroy(mc16_record_caches[order]);
++	return ret;
+ }
+ late_initcall(memcomp_init);
+ 
+diff -ruN a/mm/memcontrol.c b/mm/memcontrol.c
+--- a/mm/memcontrol.c	2026-11-28 18:27:00.794254855 +0800
++++ b/mm/memcontrol.c	2026-11-28 18:27:00.797445999 +0800
+@@ -5441,12 +5441,15 @@
+  * ID 0 selects the fault mm only for disabled or already retired identities.
+  * An online identity that cannot be pinned must fail reserve, not become ID 0.
+  */
+-int mem_cgroup_memcomp_id_get_checked(struct folio *folio, unsigned short *id)
++int mem_cgroup_memcomp_id_get_checked_memcg(struct folio *folio,
++					     unsigned short *id,
++					     struct mem_cgroup **memcgp)
+ {
+ 	struct mem_cgroup *memcg;
+ 	int ret = 0;
+ 
+ 	*id = 0;
++	*memcgp = NULL;
+ 	if (mem_cgroup_disabled())
+ 		return 0;
+ 
+@@ -5456,6 +5459,7 @@
+ 		memcg = root_mem_cgroup;
+ 	if (refcount_inc_not_zero(&memcg->id.ref)) {
+ 		*id = mem_cgroup_id(memcg);
++		*memcgp = memcg;
+ 	} else if (css_tryget_online(&memcg->css)) {
+ 		/* Online state normally already owns an ID reference. */
+ 		css_put(&memcg->css);
+@@ -5467,11 +5471,19 @@
+ 		 */
+ 		memcg = mem_cgroup_id_get_online(memcg);
+ 		*id = mem_cgroup_id(memcg);
++		*memcgp = memcg;
+ 	}
+ 	rcu_read_unlock();
+ 	return ret;
+ }
+ 
++int mem_cgroup_memcomp_id_get_checked(struct folio *folio, unsigned short *id)
++{
++	struct mem_cgroup *unused;
++
++	return mem_cgroup_memcomp_id_get_checked_memcg(folio, id, &unused);
++}
++
+ /* Convenience for callers with an already known, available source identity. */
+ unsigned short mem_cgroup_memcomp_id_get(struct folio *folio)
+ {
+@@ -5511,6 +5523,13 @@
+ 		mem_cgroup_id_put(memcg);
+ 	rcu_read_unlock();
+ }
++
++void mem_cgroup_memcomp_id_put_memcg(struct mem_cgroup *memcg)
++{
++	if (!memcg || mem_cgroup_disabled())
++		return;
++	mem_cgroup_id_put(memcg);
++}
+ #endif
+ 
+ #ifdef CONFIG_SHRINKER_DEBUG
