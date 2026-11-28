@@ -27,6 +27,6 @@ W1 三槽交叉对照（LZ4 同步，C/O 各三次冷启动）：seq CPU -2.66%�
 | `patches/pulse2-r68-opt.patch` | #68 相对 #66 的增量补丁（8 个文件） |
 | `memguard/` | 配套 MemGuard v1.4.2 模块源码与测试文件 |
 
-本版是离线优化候选，未做真机刷写验证；真机稳定性、功耗和长期行为需自行测试。回退使用 #66 完整 boot（SHA-256 `10dbf2f66f171c52b528c6a11ac74352b61b5f9b3503cc1bcf794b16231e32db`）。
+本版已刷入真机 `boot_a` 并真重启，`boot_completed=1`，Wi‑Fi、移动数据、蓝牙驱动和 Zstd 后台异步正常；应用保活、深睡、功耗和长期稳定性仍需自行测试。回退使用 #66 完整 boot（SHA-256 `10dbf2f66f171c52b528c6a11ac74352b61b5f9b3503cc1bcf794b16231e32db`）。
 
 内核基线来自 [OnePlusOSS](https://github.com/OnePlusOSS/android_kernel_common_oneplus_sm8635) 的 `oneplus/sm8635_b_16.0.0_nord_5`，memcomp 原实现来自 [nakixii/memcomp](https://github.com/nakixii/memcomp)。保留原作者署名与 GPL-2.0 许可；其余来源见仓库 README。

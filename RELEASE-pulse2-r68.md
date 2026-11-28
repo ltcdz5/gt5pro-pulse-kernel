@@ -29,7 +29,8 @@ ARM64 QEMU TCG，LZ4 同步，W1 64 MiB 匿名页；#66 与 #68 各三次冷启�
 - `vmlinux.symvers` 与 #66 发布件逐字节相同（SHA-256 `d5d991e9922270dc398f0f1486afae5336c553ccda802d7a734689cc52b8f0a6`）；`.config` 也与 #66 逐字节相同。
 - 三套原厂模块闸门（vbm 490 / vendor_dlkm 439 / system_dlkm 60）CRC mismatch 全 0；既有缺失 28 / 28 / 0。
 - 双 OEM 公钥都在 `Image` 内。
-- **本版未刷真机**：Wi‑Fi、蓝牙、移动数据、应用保活、深睡和功耗均未实测。它是离线验证候选，不是稳定版。
+- 已 `dd` 写入真机 `_a` 槽并真重启：`boot_completed=1`，`lsmod` 629，`wlan0` / `rmnet_data0` UP，modem `ONLINE`，`ping 223.5.5.5` 3/3 0% 丢包；`compressor=zstd`、`async_enabled=1`。
+- 应用保活、深睡、功耗、蓝牙配对和独立移动数据流量未实测。它是日用测试候选，不是稳定版。
 
 ## 下载
 
