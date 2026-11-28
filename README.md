@@ -116,6 +116,7 @@ adb shell su -c "sha256sum /dev/block/by-name/boot$slot"
 | 符号 | `vmlinux.symvers` 与 #66 逐字节相同（SHA-256 `d5d991e9…`）；三套厂商模块闸门 CRC mismatch 0 |
 | 证书 | 两张 OEM 公钥都在 `cert_list` 与 `Image` 内 |
 | 真机 | `dd` 写 `_a`，回读 SHA-256 `0c2468…`；真重启 `boot_completed=1`；`lsmod` 629，`wlan0`/`rmnet_data0` UP，modem `ONLINE`，ping 0% 丢包；`compressor=zstd`，`async_enabled=1` |
+| 数据完整性 | 128 MiB 匿名页压出后 RSS 130,952 → 12 页，回读与稀疏回读均通过 |
 | 未覆盖 | 无应用保活、深睡、功耗、蓝牙配对和独立移动数据流量实测；无 W2/W3 压力复测 |
 
 历史 #66 真机记录：`_a` 槽 `dd` 写入并真重启 `boot_completed=1`；`wlan0`、`rmnet_data0` UP，modem `ONLINE`，`ping 223.5.5.5` 0% 丢包；`lsmod` 629；Zstd 后台异步正常。
